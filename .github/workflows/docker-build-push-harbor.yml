@@ -110,6 +110,9 @@ on:
 jobs:
   build-and-push:
     runs-on: ${{ inputs.runs_on }}
+    env:
+      HARBOR_USERNAME: ${{ secrets.harbor_username }}
+      HARBOR_PASSWORD: ${{ secrets.harbor_password }}
     outputs:
       image-digest: ${{ steps.build.outputs.digest }}
       image-tags: ${{ steps.determine-tags.outputs.tags }}
@@ -176,7 +179,7 @@ jobs:
           API_URL="https://${HARBOR_HOST}/api/v2.0/projects/${{ inputs.harbor_project }}/repositories/${ENCODED_REPO_NAME}/artifacts/${SCAN_TAG}"
 
           response=$(curl -s -w "%{http_code}" \
-            -u "${{ secrets.harbor_username }}:${{ secrets.harbor_password }}" \
+            -u "${HARBOR_USERNAME}:${HARBOR_PASSWORD}" \
             "$API_URL" \
             -o /tmp/artifact_response.json)
 
@@ -203,8 +206,8 @@ jobs:
       total: ${{ steps.scan_results.outputs.total }}
 
     env:
-      HARBOR_HOST_CLEAN: ""
-      ENCODED_REPO: ""
+      HARBOR_USERNAME: ${{ secrets.harbor_username }}
+      HARBOR_PASSWORD: ${{ secrets.harbor_password }}
       SCAN_TAG: ${{ needs.build-and-push.outputs.scan-tag }}
 
     steps:
@@ -217,31 +220,15 @@ jobs:
           echo "encoded_repo=${ENCODED_REPO}" >> $GITHUB_OUTPUT
           echo "base_api=https://${HARBOR_HOST}/api/v2.0/projects/${{ inputs.harbor_project }}/repositories/${ENCODED_REPO}/artifacts/${{ needs.build-and-push.outputs.scan-tag }}" >> $GITHUB_OUTPUT
 
-      - name: Verify credentials for scan job
-        run: |
-          echo "Verifying Harbor credentials in scan job..."
-          ARTIFACTS_API_URL="${{ steps.vars.outputs.base_api }}"
-
-          response_code=$(curl -s -w "%{http_code}" -o /tmp/cred_check.json \
-            -u "${{ secrets.harbor_username }}:${{ secrets.harbor_password }}" \
-            "$ARTIFACTS_API_URL")
-
-          if [ "$response_code" = "200" ]; then
-            echo "✅ Credentials verified successfully"
-          else
-            echo "❌ Credential check failed with HTTP $response_code"
-            cat /tmp/cred_check.json 2>/dev/null || true
-            exit 1
-          fi
-
       - name: Trigger Harbor vulnerability scan
         run: |
           SCAN_API_URL="${{ steps.vars.outputs.base_api }}/scan"
 
           response_code=$(curl -s -w "%{http_code}" -o /tmp/scan_response.json \
             -X POST \
-            -u "${{ secrets.harbor_username }}:${{ secrets.harbor_password }}" \
+            -u "${HARBOR_USERNAME}:${HARBOR_PASSWORD}" \
             -H "Content-Type: application/json" \
+            -H "User-Agent: GitHub-Actions-Workflow" \
             "$SCAN_API_URL")
 
           if [ "$response_code" = "202" ]; then
@@ -272,7 +259,7 @@ jobs:
 
           while [ $elapsed -lt $max_wait ]; do
             scan_data=$(curl -s \
-              -u "${{ secrets.harbor_username }}:${{ secrets.harbor_password }}" \
+              -u "${HARBOR_USERNAME}:${HARBOR_PASSWORD}" \
               "$ARTIFACTS_API_URL")
 
             if ! echo "$scan_data" | jq . >/dev/null 2>&1; then
@@ -321,7 +308,7 @@ jobs:
           ARTIFACTS_API_URL="${{ steps.vars.outputs.base_api }}?with_scan_overview=true"
 
           scan_data=$(curl -s \
-            -u "${{ secrets.harbor_username }}:${{ secrets.harbor_password }}" \
+            -u "${HARBOR_USERNAME}:${HARBOR_PASSWORD}" \
             "$ARTIFACTS_API_URL")
 
           VULN_KEY="application/vnd.security.vulnerability.report; version=1.1"
@@ -348,7 +335,7 @@ jobs:
           VULN_KEY="application/vnd.security.vulnerability.report; version=1.1"
 
           scan_data=$(curl -s \
-            -u "${{ secrets.harbor_username }}:${{ secrets.harbor_password }}" \
+            -u "${HARBOR_USERNAME}:${HARBOR_PASSWORD}" \
             "$ARTIFACTS_API_URL")
 
           if ! echo "$scan_data" | jq . >/dev/null 2>&1; then
@@ -368,7 +355,7 @@ jobs:
             REPORT_URL="${{ steps.vars.outputs.base_api }}/additions/vulnerabilities"
 
             vuln_report=$(curl -s -w "HTTP_STATUS:%{http_code}" \
-              -u "${{ secrets.harbor_username }}:${{ secrets.harbor_password }}" \
+              -u "${HARBOR_USERNAME}:${HARBOR_PASSWORD}" \
               "$REPORT_URL" 2>/dev/null || echo "")
 
             if echo "$vuln_report" | grep -q "HTTP_STATUS:"; then
