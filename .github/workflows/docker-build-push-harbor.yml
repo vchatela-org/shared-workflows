@@ -1,0 +1,419 @@
+# =============================================================================
+# Reusable Workflow: Build, Push to Harbor, and Vulnerability Scan
+# =============================================================================
+# This workflow is designed to be called from any repository.
+# Place this file in a dedicated shared repo, e.g.:
+#   vchatela-org/shared-workflows/.github/workflows/docker-build-push-harbor.yml
+#
+# Usage from any repo:
+#   jobs:
+#     build:
+#       uses: vchatela-org/shared-workflows/.github/workflows/docker-build-push-harbor.yml@main
+#       with:
+#         harbor_registry: harbor.example.com
+#         harbor_project: my-project
+#         harbor_image: my-app
+#       secrets:
+#         harbor_username: ${{ secrets.HARBOR_USERNAME }}
+#         harbor_password: ${{ secrets.HARBOR_PASSWORD }}
+# =============================================================================
+
+name: Build, Push & Scan (Harbor)
+
+on:
+  workflow_call:
+    inputs:
+      harbor_registry:
+        description: "Harbor registry host (e.g. harbor.example.com)"
+        required: true
+        type: string
+      harbor_project:
+        description: "Harbor project name"
+        required: true
+        type: string
+      harbor_image:
+        description: "Harbor image name"
+        required: true
+        type: string
+      runs_on:
+        description: "Runner label to use"
+        required: false
+        type: string
+        default: "arc-runner-set"
+      dockerfile:
+        description: "Path to Dockerfile"
+        required: false
+        type: string
+        default: "."
+      buildx_driver:
+        description: "Docker Buildx driver (docker, docker-container, kubernetes)"
+        required: false
+        type: string
+        default: "kubernetes"
+      buildx_driver_opts:
+        description: "Buildx driver options (multiline string)"
+        required: false
+        type: string
+        default: |
+          namespace=buildkit
+          replicas=1
+          rootless=true
+      scan_enabled:
+        description: "Enable Harbor vulnerability scan"
+        required: false
+        type: boolean
+        default: true
+      scan_timeout_seconds:
+        description: "Max time to wait for scan completion"
+        required: false
+        type: number
+        default: 300
+      max_critical_vulns:
+        description: "Maximum allowed critical vulnerabilities (0 = fail on any)"
+        required: false
+        type: number
+        default: 0
+      max_high_vulns:
+        description: "Maximum allowed high vulnerabilities"
+        required: false
+        type: number
+        default: 5
+
+    secrets:
+      harbor_username:
+        description: "Harbor robot account username"
+        required: true
+      harbor_password:
+        description: "Harbor robot account password"
+        required: true
+
+    outputs:
+      image_digest:
+        description: "The image digest from the build"
+        value: ${{ jobs.build-and-push.outputs.image-digest }}
+      image_tag:
+        description: "The tag used for the image"
+        value: ${{ jobs.build-and-push.outputs.scan-tag }}
+      full_image_ref:
+        description: "Full image reference (registry/project/image:tag)"
+        value: ${{ jobs.build-and-push.outputs.full-image-ref }}
+      scan_status:
+        description: "Vulnerability scan status"
+        value: ${{ jobs.vulnerability-scan.outputs.scan-status }}
+      scan_critical:
+        description: "Number of critical vulnerabilities"
+        value: ${{ jobs.vulnerability-scan.outputs.critical }}
+      scan_high:
+        description: "Number of high vulnerabilities"
+        value: ${{ jobs.vulnerability-scan.outputs.high }}
+
+jobs:
+  build-and-push:
+    runs-on: ${{ inputs.runs_on }}
+    outputs:
+      image-digest: ${{ steps.build.outputs.digest }}
+      image-tags: ${{ steps.determine-tags.outputs.tags }}
+      scan-tag: ${{ steps.determine-tags.outputs.scan_tag }}
+      full-image-ref: ${{ steps.determine-tags.outputs.full_image_ref }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v5
+
+      - name: Determine tags
+        id: determine-tags
+        run: |
+          REGISTRY="${{ inputs.harbor_registry }}"
+          PROJECT="${{ inputs.harbor_project }}"
+          IMAGE="${{ inputs.harbor_image }}"
+          BASE="${REGISTRY}/${PROJECT}/${IMAGE}"
+
+          if [[ "${{ github.ref }}" =~ ^refs/tags/ ]]; then
+            TAG_NAME="${{ github.ref_name }}"
+            TAGS="${BASE}:${TAG_NAME},${BASE}:latest"
+            SCAN_TAG="${TAG_NAME}"
+            echo "This is a tagged release: ${TAG_NAME}"
+          else
+            TAGS="${BASE}:dev"
+            SCAN_TAG="dev"
+            echo "This is a development build"
+          fi
+
+          echo "tags=${TAGS}" >> $GITHUB_OUTPUT
+          echo "scan_tag=${SCAN_TAG}" >> $GITHUB_OUTPUT
+          echo "full_image_ref=${BASE}:${SCAN_TAG}" >> $GITHUB_OUTPUT
+          echo "Tags to be built: ${TAGS}"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+        with:
+          driver: ${{ inputs.buildx_driver }}
+          driver-opts: ${{ inputs.buildx_driver_opts }}
+
+      - name: Log in to Harbor
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ inputs.harbor_registry }}
+          username: ${{ secrets.harbor_username }}
+          password: ${{ secrets.harbor_password }}
+
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v6
+        id: build
+        with:
+          context: ${{ inputs.dockerfile }}
+          push: true
+          tags: ${{ steps.determine-tags.outputs.tags }}
+
+      - name: Verify image exists in Harbor
+        run: |
+          echo "Verifying image exists in Harbor registry..."
+
+          ENCODED_REPO_NAME=$(echo "${{ inputs.harbor_image }}" | sed 's|/|%2F|g')
+          HARBOR_HOST=$(echo "${{ inputs.harbor_registry }}" | sed 's|^https://||' | sed 's|^http://||' | sed 's|/$||')
+          SCAN_TAG="${{ steps.determine-tags.outputs.scan_tag }}"
+
+          API_URL="https://${HARBOR_HOST}/api/v2.0/projects/${{ inputs.harbor_project }}/repositories/${ENCODED_REPO_NAME}/artifacts/${SCAN_TAG}"
+
+          response=$(curl -s -w "%{http_code}" \
+            -u "${{ secrets.harbor_username }}:${{ secrets.harbor_password }}" \
+            "$API_URL" \
+            -o /tmp/artifact_response.json)
+
+          if [ "$response" = "200" ]; then
+            echo "✅ Image successfully pushed and available in Harbor"
+            jq -r '"  Digest: " + .digest' /tmp/artifact_response.json 2>/dev/null || true
+            jq -r '"  Size: " + (.size | tostring) + " bytes"' /tmp/artifact_response.json 2>/dev/null || true
+            jq -r '"  Push time: " + .push_time' /tmp/artifact_response.json 2>/dev/null || true
+          else
+            echo "❌ Image not found in Harbor registry (HTTP $response)"
+            exit 1
+          fi
+
+  vulnerability-scan:
+    if: ${{ inputs.scan_enabled }}
+    runs-on: ${{ inputs.runs_on }}
+    needs: build-and-push
+    outputs:
+      scan-status: ${{ steps.scan_results.outputs.scan_status }}
+      critical: ${{ steps.scan_results.outputs.critical }}
+      high: ${{ steps.scan_results.outputs.high }}
+      medium: ${{ steps.scan_results.outputs.medium }}
+      low: ${{ steps.scan_results.outputs.low }}
+      total: ${{ steps.scan_results.outputs.total }}
+
+    env:
+      HARBOR_HOST_CLEAN: ""
+      ENCODED_REPO: ""
+      SCAN_TAG: ${{ needs.build-and-push.outputs.scan-tag }}
+
+    steps:
+      - name: Set common variables
+        id: vars
+        run: |
+          HARBOR_HOST=$(echo "${{ inputs.harbor_registry }}" | sed 's|^https://||' | sed 's|^http://||' | sed 's|/$||')
+          ENCODED_REPO=$(echo "${{ inputs.harbor_image }}" | sed 's|/|%2F|g')
+          echo "harbor_host=${HARBOR_HOST}" >> $GITHUB_OUTPUT
+          echo "encoded_repo=${ENCODED_REPO}" >> $GITHUB_OUTPUT
+          echo "base_api=https://${HARBOR_HOST}/api/v2.0/projects/${{ inputs.harbor_project }}/repositories/${ENCODED_REPO}/artifacts/${{ needs.build-and-push.outputs.scan-tag }}" >> $GITHUB_OUTPUT
+
+      - name: Trigger Harbor vulnerability scan
+        run: |
+          SCAN_API_URL="${{ steps.vars.outputs.base_api }}/scan"
+
+          response_code=$(curl -s -w "%{http_code}" -o /tmp/scan_response.json \
+            -X POST \
+            -u "${{ secrets.harbor_username }}:${{ secrets.harbor_password }}" \
+            -H "Content-Type: application/json" \
+            -H "User-Agent: GitHub-Actions-Workflow" \
+            "$SCAN_API_URL")
+
+          if [ "$response_code" = "202" ]; then
+            echo "✅ Vulnerability scan triggered successfully"
+          elif [ "$response_code" = "409" ]; then
+            echo "⚠️ Scan already in progress or recently completed"
+          elif [ "$response_code" = "401" ]; then
+            echo "❌ UNAUTHORIZED: Failed to trigger scan"
+            exit 1
+          else
+            echo "❌ Scan trigger failed with HTTP $response_code"
+            cat /tmp/scan_response.json
+            exit 1
+          fi
+
+      - name: Wait for scan completion
+        run: |
+          echo "Waiting for vulnerability scan to complete..."
+          max_wait=${{ inputs.scan_timeout_seconds }}
+          elapsed=0
+          interval=10
+
+          ARTIFACTS_API_URL="${{ steps.vars.outputs.base_api }}?with_scan_overview=true"
+
+          while [ $elapsed -lt $max_wait ]; do
+            scan_data=$(curl -s \
+              -u "${{ secrets.harbor_username }}:${{ secrets.harbor_password }}" \
+              "$ARTIFACTS_API_URL")
+
+            if ! echo "$scan_data" | jq . >/dev/null 2>&1; then
+              echo "⚠️ Invalid JSON response, retrying..."
+              sleep $interval
+              elapsed=$((elapsed + interval))
+              continue
+            fi
+
+            scan_status=$(echo "$scan_data" | jq -r '
+              .scan_overview["application/vnd.security.vulnerability.report; version=1.1"].scan_status //
+              (.scan_overview | to_entries[] | select(.key | contains("vulnerability")) | .value.scan_status) //
+              "Not Available"
+            ' 2>/dev/null || echo "Not Available")
+
+            echo "Scan status: $scan_status (${elapsed}s / ${max_wait}s)"
+
+            case "$scan_status" in
+              Success) echo "✅ Scan completed successfully"; break ;;
+              Error)   echo "❌ Scan completed with errors"; break ;;
+              Stopped) echo "⚠️ Scan was stopped"; break ;;
+            esac
+
+            sleep $interval
+            elapsed=$((elapsed + interval))
+          done
+
+          if [ $elapsed -ge $max_wait ]; then
+            echo "⚠️ Scan did not complete within timeout (${max_wait}s)"
+            echo "SCAN_INCOMPLETE=true" >> $GITHUB_ENV
+          fi
+
+      - name: Get vulnerability scan results
+        id: scan_results
+        run: |
+          if [ "$SCAN_INCOMPLETE" = "true" ]; then
+            echo "scan_status=timeout" >> $GITHUB_OUTPUT
+            echo "critical=0" >> $GITHUB_OUTPUT
+            echo "high=0" >> $GITHUB_OUTPUT
+            echo "medium=0" >> $GITHUB_OUTPUT
+            echo "low=0" >> $GITHUB_OUTPUT
+            echo "total=0" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+
+          ARTIFACTS_API_URL="${{ steps.vars.outputs.base_api }}?with_scan_overview=true"
+
+          scan_data=$(curl -s \
+            -u "${{ secrets.harbor_username }}:${{ secrets.harbor_password }}" \
+            "$ARTIFACTS_API_URL")
+
+          VULN_KEY="application/vnd.security.vulnerability.report; version=1.1"
+          scan_overview=$(echo "$scan_data" | jq -r ".scan_overview[\"${VULN_KEY}\"] // null")
+
+          if [ "$scan_overview" = "null" ]; then
+            echo "⚠️ No vulnerability scan data available"
+            for metric in critical high medium low total scan_status; do
+              [ "$metric" = "scan_status" ] && echo "scan_status=No Data" >> $GITHUB_OUTPUT || echo "$metric=0" >> $GITHUB_OUTPUT
+            done
+          else
+            for severity in critical high medium low total; do
+              val=$(echo "$scan_data" | jq -r ".scan_overview[\"${VULN_KEY}\"].summary.${severity} // 0")
+              echo "$severity=$val" >> $GITHUB_OUTPUT
+            done
+            scan_status=$(echo "$scan_data" | jq -r ".scan_overview[\"${VULN_KEY}\"].scan_status // \"Unknown\"")
+            echo "scan_status=$scan_status" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Get scan logs & detailed report
+        if: always()
+        run: |
+          ARTIFACTS_API_URL="${{ steps.vars.outputs.base_api }}?with_scan_overview=true"
+          VULN_KEY="application/vnd.security.vulnerability.report; version=1.1"
+
+          scan_data=$(curl -s \
+            -u "${{ secrets.harbor_username }}:${{ secrets.harbor_password }}" \
+            "$ARTIFACTS_API_URL")
+
+          if ! echo "$scan_data" | jq . >/dev/null 2>&1; then
+            echo "⚠️ Invalid JSON response"
+            exit 0
+          fi
+
+          report_id=$(echo "$scan_data" | jq -r ".scan_overview[\"${VULN_KEY}\"].report_id // null" 2>/dev/null || echo "null")
+
+          if [ "$report_id" = "null" ] || [ -z "$report_id" ]; then
+            report_id=$(echo "$scan_data" | jq -r '.scan_overview | to_entries[] | select(.key | contains("vulnerability")) | .value.report_id // null' 2>/dev/null || echo "null")
+          fi
+
+          if [ "$report_id" != "null" ] && [ -n "$report_id" ]; then
+            echo "Found scan report ID: $report_id"
+
+            REPORT_URL="${{ steps.vars.outputs.base_api }}/additions/vulnerabilities"
+
+            vuln_report=$(curl -s -w "HTTP_STATUS:%{http_code}" \
+              -u "${{ secrets.harbor_username }}:${{ secrets.harbor_password }}" \
+              "$REPORT_URL" 2>/dev/null || echo "")
+
+            if echo "$vuln_report" | grep -q "HTTP_STATUS:"; then
+              http_status=$(echo "$vuln_report" | grep -o "HTTP_STATUS:[0-9]*" | cut -d: -f2)
+              vuln_content=$(echo "$vuln_report" | sed 's/HTTP_STATUS:[0-9]*$//')
+
+              if [ "$http_status" = "200" ] && [ -n "$vuln_content" ]; then
+                for sev in Critical High Medium Low; do
+                  count=$(echo "$vuln_content" | jq "[.\"${VULN_KEY}\".vulnerabilities[]? | select(.severity == \"${sev}\")] | length" 2>/dev/null || echo "0")
+                  eval "${sev,,}_count=$count"
+                done
+                total_count=$(echo "$vuln_content" | jq ".\"${VULN_KEY}\".vulnerabilities | length" 2>/dev/null || echo "0")
+
+                echo "📋 Vulnerability Summary: Critical=$critical_count High=$high_count Medium=$medium_count Low=$low_count Total=$total_count"
+
+                # Write step summary
+                cat >> $GITHUB_STEP_SUMMARY <<EOF
+
+## 📋 Vulnerability Report Details
+
+| Severity | Count |
+|----------|-------|
+| 🔴 Critical | $critical_count |
+| 🟠 High | $high_count |
+| 🟡 Medium | $medium_count |
+| 🔵 Low | $low_count |
+| **Total** | **$total_count** |
+
+EOF
+
+                if [ "$total_count" -gt "0" ]; then
+                  echo "### Top Critical and High Severity Vulnerabilities" >> $GITHUB_STEP_SUMMARY
+                  echo "" >> $GITHUB_STEP_SUMMARY
+                  echo "| CVE | Severity | Package | Version | Description |" >> $GITHUB_STEP_SUMMARY
+                  echo "|-----|----------|---------|---------|-------------|" >> $GITHUB_STEP_SUMMARY
+                  echo "$vuln_content" | jq -r ".\"${VULN_KEY}\".vulnerabilities[]? | select(.severity == \"Critical\" or .severity == \"High\") | \"| \" + .id + \" | \" + .severity + \" | \" + .package + \" | \" + .version + \" | \" + (.description | .[0:100]) + \"... |\"" 2>/dev/null | head -10 >> $GITHUB_STEP_SUMMARY || true
+                fi
+              fi
+            fi
+          fi
+
+      - name: Check vulnerability thresholds
+        run: |
+          critical="${{ steps.scan_results.outputs.critical }}"
+          high="${{ steps.scan_results.outputs.high }}"
+          critical=${critical:-0}
+          high=${high:-0}
+
+          echo "Critical: $critical (max: ${{ inputs.max_critical_vulns }})"
+          echo "High: $high (max: ${{ inputs.max_high_vulns }})"
+
+          if [ "$critical" -gt "${{ inputs.max_critical_vulns }}" ]; then
+            echo "❌ FAIL: Critical vulnerabilities ($critical) exceed threshold (${{ inputs.max_critical_vulns }})"
+            exit 1
+          fi
+
+          if [ "$high" -gt "${{ inputs.max_high_vulns }}" ]; then
+            echo "❌ FAIL: High vulnerabilities ($high) exceed threshold (${{ inputs.max_high_vulns }})"
+            exit 1
+          fi
+
+          echo "✅ PASS: Vulnerability levels within thresholds"
+
+      - name: Cleanup
+        if: always()
+        run: |
+          rm -f /tmp/artifact_response.json /tmp/scan_response.json /tmp/vuln_*
+          echo "✅ Cleanup completed"
