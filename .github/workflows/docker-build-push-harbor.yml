@@ -217,6 +217,23 @@ jobs:
           echo "encoded_repo=${ENCODED_REPO}" >> $GITHUB_OUTPUT
           echo "base_api=https://${HARBOR_HOST}/api/v2.0/projects/${{ inputs.harbor_project }}/repositories/${ENCODED_REPO}/artifacts/${{ needs.build-and-push.outputs.scan-tag }}" >> $GITHUB_OUTPUT
 
+      - name: Verify credentials for scan job
+        run: |
+          echo "Verifying Harbor credentials in scan job..."
+          ARTIFACTS_API_URL="${{ steps.vars.outputs.base_api }}"
+
+          response_code=$(curl -s -w "%{http_code}" -o /tmp/cred_check.json \
+            -u "${{ secrets.harbor_username }}:${{ secrets.harbor_password }}" \
+            "$ARTIFACTS_API_URL")
+
+          if [ "$response_code" = "200" ]; then
+            echo "✅ Credentials verified successfully"
+          else
+            echo "❌ Credential check failed with HTTP $response_code"
+            cat /tmp/cred_check.json 2>/dev/null || true
+            exit 1
+          fi
+
       - name: Trigger Harbor vulnerability scan
         run: |
           SCAN_API_URL="${{ steps.vars.outputs.base_api }}/scan"
@@ -225,15 +242,18 @@ jobs:
             -X POST \
             -u "${{ secrets.harbor_username }}:${{ secrets.harbor_password }}" \
             -H "Content-Type: application/json" \
-            -H "User-Agent: GitHub-Actions-Workflow" \
             "$SCAN_API_URL")
 
           if [ "$response_code" = "202" ]; then
             echo "✅ Vulnerability scan triggered successfully"
           elif [ "$response_code" = "409" ]; then
             echo "⚠️ Scan already in progress or recently completed"
-          elif [ "$response_code" = "401" ]; then
-            echo "❌ UNAUTHORIZED: Failed to trigger scan"
+          elif [ "$response_code" = "401" ] || [ "$response_code" = "403" ]; then
+            echo "❌ UNAUTHORIZED (HTTP $response_code): Failed to trigger scan"
+            echo "Response body:"
+            cat /tmp/scan_response.json 2>/dev/null || true
+            echo ""
+            echo "Ensure the robot account has 'create-scan' permission on project '${{ inputs.harbor_project }}'"
             exit 1
           else
             echo "❌ Scan trigger failed with HTTP $response_code"
