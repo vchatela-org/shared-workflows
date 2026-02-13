@@ -306,12 +306,12 @@ jobs:
           fi
 
           ARTIFACTS_API_URL="${{ steps.vars.outputs.base_api }}?with_scan_overview=true"
+          VULN_KEY="application/vnd.security.vulnerability.report; version=1.1"
 
           scan_data=$(curl -s \
             -u "${HARBOR_USERNAME}:${HARBOR_PASSWORD}" \
             "$ARTIFACTS_API_URL")
 
-          VULN_KEY="application/vnd.security.vulnerability.report; version=1.1"
           scan_overview=$(echo "$scan_data" | jq -r ".scan_overview[\"${VULN_KEY}\"] // null")
 
           if [ "$scan_overview" = "null" ]; then
@@ -320,12 +320,40 @@ jobs:
               [ "$metric" = "scan_status" ] && echo "scan_status=No Data" >> $GITHUB_OUTPUT || echo "$metric=0" >> $GITHUB_OUTPUT
             done
           else
-            for severity in critical high medium low total; do
-              val=$(echo "$scan_data" | jq -r ".scan_overview[\"${VULN_KEY}\"].summary.${severity} // 0")
-              echo "$severity=$val" >> $GITHUB_OUTPUT
-            done
+            # Get scan status
             scan_status=$(echo "$scan_data" | jq -r ".scan_overview[\"${VULN_KEY}\"].scan_status // \"Unknown\"")
             echo "scan_status=$scan_status" >> $GITHUB_OUTPUT
+            
+            # Get detailed vulnerability report for accurate counts
+            REPORT_URL="${{ steps.vars.outputs.base_api }}/additions/vulnerabilities"
+            
+            vuln_report=$(curl -s \
+              -u "${HARBOR_USERNAME}:${HARBOR_PASSWORD}" \
+              "$REPORT_URL" 2>/dev/null || echo "")
+            
+            # Count vulnerabilities from detailed report (more accurate than summary)
+            if echo "$vuln_report" | jq . >/dev/null 2>&1; then
+              critical_count=$(echo "$vuln_report" | jq "[.\"${VULN_KEY}\".vulnerabilities[]? | select(.severity == \"Critical\")] | length" 2>/dev/null || echo "0")
+              high_count=$(echo "$vuln_report" | jq "[.\"${VULN_KEY}\".vulnerabilities[]? | select(.severity == \"High\")] | length" 2>/dev/null || echo "0")
+              medium_count=$(echo "$vuln_report" | jq "[.\"${VULN_KEY}\".vulnerabilities[]? | select(.severity == \"Medium\")] | length" 2>/dev/null || echo "0")
+              low_count=$(echo "$vuln_report" | jq "[.\"${VULN_KEY}\".vulnerabilities[]? | select(.severity == \"Low\")] | length" 2>/dev/null || echo "0")
+              total_count=$(echo "$vuln_report" | jq ".\"${VULN_KEY}\".vulnerabilities | length" 2>/dev/null || echo "0")
+              
+              echo "critical=$critical_count" >> $GITHUB_OUTPUT
+              echo "high=$high_count" >> $GITHUB_OUTPUT
+              echo "medium=$medium_count" >> $GITHUB_OUTPUT
+              echo "low=$low_count" >> $GITHUB_OUTPUT
+              echo "total=$total_count" >> $GITHUB_OUTPUT
+              
+              echo "📊 Parsed vulnerability counts: Critical=$critical_count, High=$high_count, Medium=$medium_count, Low=$low_count, Total=$total_count"
+            else
+              # Fallback to summary if detailed report unavailable
+              echo "⚠️ Detailed report unavailable, using summary counts"
+              for severity in critical high medium low total; do
+                val=$(echo "$scan_data" | jq -r ".scan_overview[\"${VULN_KEY}\"].summary.${severity} // 0")
+                echo "$severity=$val" >> $GITHUB_OUTPUT
+              done
+            fi
           fi
 
       - name: Get scan logs & detailed report
