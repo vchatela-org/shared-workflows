@@ -365,19 +365,19 @@ jobs:
                 echo "📋 Vulnerability Summary: Critical=$critical_count High=$high_count Medium=$medium_count Low=$low_count Total=$total_count"
 
                 # Write step summary
-                cat >> $GITHUB_STEP_SUMMARY <<EOF
-
-## 📋 Vulnerability Report Details
-
-| Severity | Count |
-|----------|-------|
-| 🔴 Critical | $critical_count |
-| 🟠 High | $high_count |
-| 🟡 Medium | $medium_count |
-| 🔵 Low | $low_count |
-| **Total** | **$total_count** |
-
-EOF
+                {
+                  echo ""
+                  echo "## 📋 Vulnerability Report Details"
+                  echo ""
+                  echo "| Severity | Count |"
+                  echo "|----------|-------|"
+                  echo "| 🔴 Critical | $critical_count |"
+                  echo "| 🟠 High | $high_count |"
+                  echo "| 🟡 Medium | $medium_count |"
+                  echo "| 🔵 Low | $low_count |"
+                  echo "| **Total** | **$total_count** |"
+                  echo ""
+                } >> $GITHUB_STEP_SUMMARY
 
                 if [ "$total_count" -gt "0" ]; then
                   echo "### Top Critical and High Severity Vulnerabilities" >> $GITHUB_STEP_SUMMARY
