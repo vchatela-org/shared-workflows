@@ -31,7 +31,7 @@ on:
 
 jobs:
   docker-build-push-scan:
-    uses: vchatela-org/shared-workflows/.github/workflows/docker-build-push-harbor.yml@main
+    uses: vchatela-org/shared-workflows/.github/workflows/docker-build-push-harbor.yml@v1
     with:
       harbor_registry: ${{ vars.HARBOR_REGISTRY }}
       harbor_project: ${{ vars.HARBOR_PROJECT }}
@@ -39,6 +39,34 @@ jobs:
     secrets:
       harbor_username: ${{ secrets.HARBOR_USERNAME }}
       harbor_password: ${{ secrets.HARBOR_PASSWORD }}
+```
+
+## Versioning
+
+Pin to a tag rather than `@main`, so a change here can never break a consuming
+repo's build without you choosing to take it.
+
+| Ref | Moves? | Use when |
+|---|---|---|
+| `@v1` | Yes — follows the latest `v1.x.y` | **Recommended.** Bugfixes and backwards-compatible features arrive automatically. |
+| `@v1.0.0` | No | You need a fully reproducible build and will bump manually. |
+| `@main` | Yes — every push | Testing an unreleased change only. Not for production. |
+
+Releases follow [semantic versioning](https://semver.org/):
+
+- **Patch** (`v1.0.1`) — bugfixes, no interface change.
+- **Minor** (`v1.1.0`) — new optional inputs or outputs; existing callers keep working.
+- **Major** (`v2.0.0`) — a breaking change, such as a removed/renamed input, a new
+  required input, or a changed default that alters behaviour. A new `v2` tag is
+  published and `v1` stops moving, so `@v1` callers are unaffected until they opt in.
+
+### Cutting a release
+
+```bash
+git tag -a v1.1.0 -m "Add <thing>"      # immutable release tag
+git tag -f -a v1 -m "v1 -> v1.1.0"      # move the floating major tag
+git push origin v1.1.0
+git push origin v1 --force              # required: v1 is a moving ref
 ```
 
 ## Inputs
@@ -81,7 +109,7 @@ jobs:
 ```yaml
 jobs:
   build:
-    uses: vchatela-org/shared-workflows/.github/workflows/docker-build-push-harbor.yml@main
+    uses: vchatela-org/shared-workflows/.github/workflows/docker-build-push-harbor.yml@v1
     with:
       harbor_registry: ${{ vars.HARBOR_REGISTRY }}
       harbor_project: ${{ vars.HARBOR_PROJECT }}
@@ -95,7 +123,7 @@ jobs:
 ```yaml
 jobs:
   build:
-    uses: vchatela-org/shared-workflows/.github/workflows/docker-build-push-harbor.yml@main
+    uses: vchatela-org/shared-workflows/.github/workflows/docker-build-push-harbor.yml@v1
     with:
       harbor_registry: ${{ vars.HARBOR_REGISTRY }}
       harbor_project: ${{ vars.HARBOR_PROJECT }}
@@ -111,7 +139,7 @@ jobs:
 ```yaml
 jobs:
   build:
-    uses: vchatela-org/shared-workflows/.github/workflows/docker-build-push-harbor.yml@main
+    uses: vchatela-org/shared-workflows/.github/workflows/docker-build-push-harbor.yml@v1
     with:
       harbor_registry: ${{ vars.HARBOR_REGISTRY }}
       harbor_project: ${{ vars.HARBOR_PROJECT }}
@@ -127,7 +155,7 @@ jobs:
 ```yaml
 jobs:
   build:
-    uses: vchatela-org/shared-workflows/.github/workflows/docker-build-push-harbor.yml@main
+    uses: vchatela-org/shared-workflows/.github/workflows/docker-build-push-harbor.yml@v1
     with:
       harbor_registry: ${{ vars.HARBOR_REGISTRY }}
       harbor_project: ${{ vars.HARBOR_PROJECT }}

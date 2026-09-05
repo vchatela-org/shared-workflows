@@ -8,7 +8,7 @@
 # Usage from any repo:
 #   jobs:
 #     build:
-#       uses: vchatela-org/shared-workflows/.github/workflows/docker-build-push-harbor.yml@main
+#       uses: vchatela-org/shared-workflows/.github/workflows/docker-build-push-harbor.yml@v1
 #       with:
 #         harbor_registry: harbor.example.com
 #         harbor_project: my-project
