@@ -158,6 +158,20 @@ jobs:
           images: ${{ inputs.harbor_registry }}/${{ inputs.harbor_project }}/${{ inputs.harbor_image }}
           tags: type=raw,value=${{ steps.determine-tags.outputs.scan_tag }}
 
+      # metadata-action also emits a label with an empty value when the repository has no
+      # description or license; that would blank the same label set by the Dockerfile or
+      # the base image, so keep only labels that carry a value.
+      - name: Drop empty labels
+        id: labels
+        env:
+          LABELS: ${{ steps.meta.outputs.labels }}
+        run: |
+          {
+            echo 'labels<<EOF_LABELS'
+            printf '%s\n' "$LABELS" | grep -v -e '=$' -e '^$' || true
+            echo 'EOF_LABELS'
+          } >> "$GITHUB_OUTPUT"
+
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v4
         with:
@@ -178,7 +192,7 @@ jobs:
           context: ${{ inputs.dockerfile }}
           push: true
           tags: ${{ steps.determine-tags.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
+          labels: ${{ steps.labels.outputs.labels }}
 
       - name: Verify image exists in Harbor
         run: |

@@ -12,7 +12,9 @@
 # event that token may trigger). No PAT needed; the builds see the tag as their ref
 # exactly as on a pushed tag.
 #
-# Usage (caller, triggered on push to the default branch):
+# Usage (caller, triggered on push to the default branch). The caller grants all four
+# permissions even with no build workflow: GitHub checks a nested job's permissions
+# when the run starts, before its `if`.
 #   permissions:
 #     contents: write
 #     issues: write
@@ -56,7 +58,7 @@ on:
 
     outputs:
       release_created:
-        description: "'true' when this run created a release"
+        description: "'true' when this run created a release, empty otherwise"
         value: ${{ jobs.release-please.outputs.release_created }}
       tag_name:
         description: "The release tag (e.g. v1.4.0), when one was created"
@@ -68,9 +70,10 @@ on:
 jobs:
   release-please:
     runs-on: ${{ inputs.runs_on }}
-    # Two pushes in a row must not race on the same release PR or tag.
+    # Two pushes in a row must not race on the same release PR or tag. Named so it
+    # cannot collide with a concurrency group the caller sets on its own run.
     concurrency:
-      group: release-please
+      group: shared-release-please-${{ inputs.manifest_file }}
       cancel-in-progress: false
     permissions:
       contents: write
@@ -88,9 +91,12 @@ jobs:
           config-file: ${{ inputs.config_file }}
           manifest-file: ${{ inputs.manifest_file }}
 
+  # A job of its own so that "Re-run failed jobs" retries only the dispatch, with the
+  # tag it was given. `!cancelled()`: release-please creates the release before it
+  # updates PRs, so a failure after that point must still start the builds.
   dispatch-builds:
     needs: release-please
-    if: needs.release-please.outputs.release_created == 'true' && inputs.build_workflows != ''
+    if: ${{ !cancelled() && needs.release-please.outputs.release_created == 'true' && inputs.build_workflows != '' }}
     runs-on: ${{ inputs.runs_on }}
     permissions:
       actions: write
@@ -103,7 +109,13 @@ jobs:
         run: |
           failed=0
           for wf in $WORKFLOWS; do
-            if gh workflow run "$wf" --repo "$GITHUB_REPOSITORY" --ref "$TAG"; then
+            # A re-run must not start a build twice: a second push of the same tag
+            # gets a new digest (the "created" label differs) under the same name.
+            started=$(gh run list --repo "$GITHUB_REPOSITORY" --workflow "$wf" \
+              --event workflow_dispatch --branch "$TAG" --json databaseId --jq 'length' || echo 0)
+            if [ "${started:-0}" -gt 0 ]; then
+              echo "\`$wf\` already started on \`$TAG\`, skipped" | tee -a "$GITHUB_STEP_SUMMARY"
+            elif gh workflow run "$wf" --repo "$GITHUB_REPOSITORY" --ref "$TAG"; then
               echo "Started \`$wf\` on \`$TAG\`" | tee -a "$GITHUB_STEP_SUMMARY"
             else
               echo "::error::Could not start $wf on $TAG (does it accept workflow_dispatch?)"

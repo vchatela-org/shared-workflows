@@ -7,7 +7,9 @@
 
 Together they put a version's release notes in front of whoever bumps it: Renovate and
 Dependabot read the image's `org.opencontainers.image.source` label to find the repository,
-then show the GitHub Release notes of every version the bump skips.
+then show the GitHub Release notes of every version the bump skips. For a private
+repository, the bot's token must be able to read it (Renovate here runs with a user token
+that can).
 
 # Reusable Workflow: Docker Build, Push & Scan (Harbor)
 
@@ -39,6 +41,7 @@ on:
   push:
     branches: [ 'main' ]
     tags: [ 'v*' ]
+  workflow_dispatch:   # lets release-please.yml start it on a release tag
 
 jobs:
   docker-build-push-scan:
@@ -84,8 +87,10 @@ git push origin v1 --force              # required: v1 is a moving ref
 
 Every image carries the OCI labels of [docker/metadata-action](https://github.com/docker/metadata-action):
 `org.opencontainers.image.source` (the repository URL), `revision` (the commit), `version` (the tag,
-or `dev`), `created`, `title`, `url`, `description` and `licenses`. Nothing to configure. The source
-label is what lets Renovate and Dependabot link a Harbor image to its repository's release notes.
+or `dev`), `created`, `title`, `url`, and `description` and `licenses` when the repository has them
+(an empty one is dropped, so it never blanks the Dockerfile's or the base image's). Nothing to
+configure. The source label is what lets Renovate and Dependabot link a Harbor image to its
+repository's release notes.
 
 ## Inputs
 
@@ -206,6 +211,8 @@ pile up in it until you merge it; merging it is the release:
 - **Settings → Actions → General → "Allow GitHub Actions to create and approve pull requests"**
   must be on, in the organization and in the repository, or release-please cannot open its PR.
 - Each build workflow listed in `build_workflows` must have `workflow_dispatch:` among its triggers.
+- The caller grants the four permissions below even with no build workflow: GitHub checks a
+  nested job's permissions when the run starts.
 - Add three files.
 
 `.github/workflows/release.yml`:
@@ -272,26 +279,56 @@ jobs:
 ```
 
 - `version-file` is the file holding only the version (`simple` type); `extra-files` lists any
-  other file carrying it, each marked on that line with a `x-release-please-version` comment,
-  e.g. `__version__ = "0.9.0"  # x-release-please-version`. Drop either key if the repository
-  has no such file. `release-type` can also be `python` or `node` for a package manifest.
+  other file carrying it. Mark the line in that file with a block, so the line itself stays
+  as it was (a check that parses `__version__ = "X"` keeps working):
+
+  ```python
+  # x-release-please-start-version
+  __version__ = "0.9.0"
+  # x-release-please-end
+  ```
+
+  Drop either key if the repository has no such file. `release-type` can also be `python` or
+  `node` for a package manifest.
 - **The first release PR starts at the manifest's version**: release-please looks for that
   version's GitHub Release, then for its tag (`v0.9.0`), and only collects the commits after it.
   No GitHub Release needs to exist beforehand.
 - **Versions while 0.x**: a `feat` bumps the minor, any other listed type the patch, and a
   breaking change (`feat!:` or a `BREAKING CHANGE:` footer) the minor (`bump-minor-pre-major`).
-  A `Release-As: X.Y.Z` footer forces the version. Hidden types never make a release on their own.
-- **Dependencies**: have Dependabot prefix runtime bumps with `deps` and the rest with `chore`/`ci`,
-  so only what ships in the image reaches the notes:
+  A `Release-As: X.Y.Z` footer forces the version. Hidden types never make a release on their
+  own. A revert counts only as `revert: <subject>`: `git revert`'s own `Revert "..."` is not a
+  conventional commit, so reword it.
+- **Dependencies**: Dependabot's commit prefix decides what reaches the notes. `prefix-development`
+  only exists for some ecosystems (npm, pip, bundler, composer, maven, mix), so set it per block:
 
   ```yaml
+    - package-ecosystem: "pip"          # also npm
       commit-message:
-        prefix: "deps"
-        prefix-development: "chore"
+        prefix: "deps"                  # runtime: listed, makes a patch release
+        prefix-development: "chore"     # dev: hidden
+    - package-ecosystem: "docker"
+      commit-message:
+        prefix: "deps"                  # every FROM, build stages included
+    - package-ecosystem: "github-actions"
+      commit-message:
+        prefix: "ci"                    # hidden
   ```
 
 Once this is in, don't bump the version or tag by hand: merge the release PR. If a build fails
-to start, re-run the failed `dispatch-builds` job; the release is already there.
+to start, re-run the failed `dispatch-builds` job; it skips a workflow already started on that tag.
+
+## Limits
+
+- **Merge commits**: release-please reads every commit a merged branch brings, so each `feat` or
+  `fix` commit on it is one line of the notes, review fixes included. It also walks history by
+  commit date and stops at the last release: a branch commit dated **before** the last release
+  but merged after it is never seen. Before merging a branch that is behind the default branch,
+  update it with a rebase (`gh pr update-branch --rebase <PR>`), which re-dates its commits.
+  Squash merges avoid both (one commit per PR, dated at the merge, its title is the entry).
+- **The release PR runs no CI**: it is pushed with `GITHUB_TOKEN`, whose events start no
+  workflow. It only touches the version files and `CHANGELOG.md`; the push checks run on the
+  default branch once it is merged. A required status check would block it for good: that
+  would need a GitHub App token for release-please instead.
 
 ## Inputs
 
@@ -306,7 +343,7 @@ to start, re-run the failed `dispatch-builds` job; the release is already there.
 
 | Output | Description |
 |---|---|
-| `release_created` | `true` when the run created a release |
+| `release_created` | `true` when the run created a release, empty otherwise |
 | `tag_name` | The new tag (e.g. `v1.4.0`) |
 | `version` | The new version (e.g. `1.4.0`) |
 
