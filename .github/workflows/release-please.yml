@@ -1,0 +1,113 @@
+# =============================================================================
+# Reusable Workflow: release-please (release PR -> tag + GitHub Release -> builds)
+# =============================================================================
+# Every push to the caller's default branch updates ONE open release PR: the next
+# version (from the conventional commits since the last release) and its CHANGELOG
+# entry. Several features and fixes pile up in it; merging it is the release:
+# release-please then creates the tag and the GitHub Release, whose notes Renovate
+# and Dependabot show in their version-bump PRs.
+#
+# A tag created with the default GITHUB_TOKEN starts no workflow, so the caller's
+# image builds are started here with `workflow_dispatch` on the new tag (the one
+# event that token may trigger). No PAT needed; the builds see the tag as their ref
+# exactly as on a pushed tag.
+#
+# Usage (caller, triggered on push to the default branch):
+#   permissions:
+#     contents: write
+#     issues: write
+#     pull-requests: write
+#     actions: write
+#   jobs:
+#     release:
+#       uses: vchatela-org/shared-workflows/.github/workflows/release-please.yml@v1
+#       with:
+#         build_workflows: docker-build-push.yml ghcr-publish.yml
+# =============================================================================
+
+name: Release (release-please)
+
+on:
+  workflow_call:
+    inputs:
+      build_workflows:
+        description: >-
+          Workflow files of the calling repository to start on the new tag,
+          space-separated (e.g. "docker-build-push.yml ghcr-publish.yml").
+          Each must accept workflow_dispatch. Empty = start nothing.
+        required: false
+        type: string
+        default: ""
+      config_file:
+        description: "release-please config file"
+        required: false
+        type: string
+        default: "release-please-config.json"
+      manifest_file:
+        description: "release-please manifest file (the current version)"
+        required: false
+        type: string
+        default: ".release-please-manifest.json"
+      runs_on:
+        description: "Runner label (needs the gh CLI to start the builds)"
+        required: false
+        type: string
+        default: "ubuntu-latest"
+
+    outputs:
+      release_created:
+        description: "'true' when this run created a release"
+        value: ${{ jobs.release-please.outputs.release_created }}
+      tag_name:
+        description: "The release tag (e.g. v1.4.0), when one was created"
+        value: ${{ jobs.release-please.outputs.tag_name }}
+      version:
+        description: "The released version (e.g. 1.4.0), when one was created"
+        value: ${{ jobs.release-please.outputs.version }}
+
+jobs:
+  release-please:
+    runs-on: ${{ inputs.runs_on }}
+    # Two pushes in a row must not race on the same release PR or tag.
+    concurrency:
+      group: release-please
+      cancel-in-progress: false
+    permissions:
+      contents: write
+      issues: write
+      pull-requests: write
+    outputs:
+      release_created: ${{ steps.release.outputs.release_created }}
+      tag_name: ${{ steps.release.outputs.tag_name }}
+      version: ${{ steps.release.outputs.version }}
+    steps:
+      - name: Release PR, or tag + GitHub Release once it is merged
+        id: release
+        uses: googleapis/release-please-action@v5
+        with:
+          config-file: ${{ inputs.config_file }}
+          manifest-file: ${{ inputs.manifest_file }}
+
+  dispatch-builds:
+    needs: release-please
+    if: needs.release-please.outputs.release_created == 'true' && inputs.build_workflows != ''
+    runs-on: ${{ inputs.runs_on }}
+    permissions:
+      actions: write
+    steps:
+      - name: Start the build workflows on the release tag
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.release-please.outputs.tag_name }}
+          WORKFLOWS: ${{ inputs.build_workflows }}
+        run: |
+          failed=0
+          for wf in $WORKFLOWS; do
+            if gh workflow run "$wf" --repo "$GITHUB_REPOSITORY" --ref "$TAG"; then
+              echo "Started \`$wf\` on \`$TAG\`" | tee -a "$GITHUB_STEP_SUMMARY"
+            else
+              echo "::error::Could not start $wf on $TAG (does it accept workflow_dispatch?)"
+              failed=1
+            fi
+          done
+          exit "$failed"

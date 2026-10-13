@@ -1,3 +1,14 @@
+# Shared workflows
+
+| Workflow | What it does |
+|---|---|
+| [`docker-build-push-harbor.yml`](#reusable-workflow-docker-build-push--scan-harbor) | Builds an image, pushes it to Harbor with OCI labels, gates on Harbor's vulnerability scan |
+| [`release-please.yml`](#reusable-workflow-release-pr-release-please) | Keeps a release PR open; merging it tags, publishes the GitHub Release and starts the image builds |
+
+Together they put a version's release notes in front of whoever bumps it: Renovate and
+Dependabot read the image's `org.opencontainers.image.source` label to find the repository,
+then show the GitHub Release notes of every version the bump skips.
+
 # Reusable Workflow: Docker Build, Push & Scan (Harbor)
 
 ## Setup
@@ -68,6 +79,13 @@ git tag -f -a v1 -m "v1 -> v1.1.0"      # move the floating major tag
 git push origin v1.1.0
 git push origin v1 --force              # required: v1 is a moving ref
 ```
+
+## Image labels
+
+Every image carries the OCI labels of [docker/metadata-action](https://github.com/docker/metadata-action):
+`org.opencontainers.image.source` (the repository URL), `revision` (the commit), `version` (the tag,
+or `dev`), `created`, `title`, `url`, `description` and `licenses`. Nothing to configure. The source
+label is what lets Renovate and Dependabot link a Harbor image to its repository's release notes.
 
 ## Inputs
 
@@ -170,6 +188,127 @@ jobs:
     steps:
       - run: echo "Deploying ${{ needs.build.outputs.full_image_ref }}"
 ```
+
+# Reusable Workflow: Release PR (release-please)
+
+[release-please](https://github.com/googleapis/release-please) reads the
+[conventional commits](https://www.conventionalcommits.org/) on the default branch and keeps
+**one release PR** open with the next version and its `CHANGELOG.md` entry. Features and fixes
+pile up in it until you merge it; merging it is the release:
+
+1. release-please tags `vX.Y.Z` and publishes the GitHub Release with the same notes;
+2. this workflow starts the caller's build workflows on that tag (`workflow_dispatch`, the one
+   event the default `GITHUB_TOKEN` may trigger: a tag it creates starts nothing by itself), so
+   no personal token is needed and the builds see the tag as their ref, as on a pushed tag.
+
+## Setup (once per repository)
+
+- **Settings → Actions → General → "Allow GitHub Actions to create and approve pull requests"**
+  must be on, in the organization and in the repository, or release-please cannot open its PR.
+- Each build workflow listed in `build_workflows` must have `workflow_dispatch:` among its triggers.
+- Add three files.
+
+`.github/workflows/release.yml`:
+
+```yaml
+name: Release
+
+on:
+  push:
+    branches: [ 'main' ]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  issues: write
+  pull-requests: write
+  actions: write
+
+jobs:
+  release:
+    uses: vchatela-org/shared-workflows/.github/workflows/release-please.yml@v1
+    with:
+      build_workflows: docker-build-push.yml ghcr-publish.yml
+```
+
+`.release-please-manifest.json`, the current version (the latest tag, without its `v`):
+
+```json
+{ ".": "0.9.0" }
+```
+
+`release-please-config.json`:
+
+```json
+{
+  "$schema": "https://raw.githubusercontent.com/googleapis/release-please/main/schemas/config.json",
+  "release-type": "simple",
+  "include-component-in-tag": false,
+  "bump-minor-pre-major": true,
+  "bump-patch-for-minor-pre-major": false,
+  "changelog-sections": [
+    { "type": "feat", "section": "Features" },
+    { "type": "fix", "section": "Bug Fixes" },
+    { "type": "perf", "section": "Performance" },
+    { "type": "revert", "section": "Reverts" },
+    { "type": "deps", "section": "Dependencies" },
+    { "type": "docs", "section": "Documentation", "hidden": true },
+    { "type": "refactor", "section": "Refactoring", "hidden": true },
+    { "type": "test", "section": "Tests", "hidden": true },
+    { "type": "build", "section": "Build", "hidden": true },
+    { "type": "ci", "section": "CI", "hidden": true },
+    { "type": "chore", "section": "Chores", "hidden": true },
+    { "type": "style", "section": "Style", "hidden": true }
+  ],
+  "packages": {
+    ".": {
+      "version-file": "VERSION",
+      "extra-files": [
+        { "type": "generic", "path": "app/__version__.py" }
+      ]
+    }
+  }
+}
+```
+
+- `version-file` is the file holding only the version (`simple` type); `extra-files` lists any
+  other file carrying it, each marked on that line with a `x-release-please-version` comment,
+  e.g. `__version__ = "0.9.0"  # x-release-please-version`. Drop either key if the repository
+  has no such file. `release-type` can also be `python` or `node` for a package manifest.
+- **The first release PR starts at the manifest's version**: release-please looks for that
+  version's GitHub Release, then for its tag (`v0.9.0`), and only collects the commits after it.
+  No GitHub Release needs to exist beforehand.
+- **Versions while 0.x**: a `feat` bumps the minor, any other listed type the patch, and a
+  breaking change (`feat!:` or a `BREAKING CHANGE:` footer) the minor (`bump-minor-pre-major`).
+  A `Release-As: X.Y.Z` footer forces the version. Hidden types never make a release on their own.
+- **Dependencies**: have Dependabot prefix runtime bumps with `deps` and the rest with `chore`/`ci`,
+  so only what ships in the image reaches the notes:
+
+  ```yaml
+      commit-message:
+        prefix: "deps"
+        prefix-development: "chore"
+  ```
+
+Once this is in, don't bump the version or tag by hand: merge the release PR. If a build fails
+to start, re-run the failed `dispatch-builds` job; the release is already there.
+
+## Inputs
+
+| Input | Required | Default | Description |
+|---|---|---|---|
+| `build_workflows` | No | `""` | Caller workflow files to start on the new tag, space-separated |
+| `config_file` | No | `release-please-config.json` | release-please config |
+| `manifest_file` | No | `.release-please-manifest.json` | release-please manifest |
+| `runs_on` | No | `ubuntu-latest` | Runner label (needs the `gh` CLI) |
+
+## Outputs
+
+| Output | Description |
+|---|---|
+| `release_created` | `true` when the run created a release |
+| `tag_name` | The new tag (e.g. `v1.4.0`) |
+| `version` | The new version (e.g. `1.4.0`) |
 
 ## Composite Action vs Reusable Workflow
 
