@@ -231,10 +231,13 @@ pile up in it until you merge it; merging it is the release:
   ```bash
   gh api -X PATCH repos/<owner>/<repo> \
     -F allow_squash_merge=true -F allow_rebase_merge=false \
-    -f squash_merge_commit_title=PR_TITLE -f squash_merge_commit_message=BLANK
+    -f squash_merge_commit_title=PR_TITLE -f squash_merge_commit_message=BLANK \
+    -f merge_commit_title=MERGE_MESSAGE -f merge_commit_message=BLANK
   ```
 
   Rebase-merging is turned off: it would land every branch commit, as a merge commit does.
+  A merge commit's body is emptied too, or the PR title in it would be one more entry. These
+  are the merge dialog's prefill: keep it as is.
 
   The PR title, plus GitHub's `(#N)`, is then the PR's one line in the release notes and
   decides the bump; [`pr-title.yml`](#pr-title-check-pr-titleyml) checks it. Why the body stays
@@ -273,6 +276,7 @@ name: PR title
 
 on:
   pull_request:
+    branches: [ main ]
     types: [ opened, edited, synchronize, reopened ]
 
 permissions: {}
@@ -340,10 +344,12 @@ jobs:
 - **Versions while 0.x**: a `feat` bumps the minor, any other listed type the patch, and a
   breaking change (`feat!:` or a `BREAKING CHANGE:` footer) the minor (`bump-minor-pre-major`).
   To force a version, set `"release-as": "X.Y.Z"` in the package's entry of
-  `release-please-config.json`, and remove it once that release is out. (A `Release-As:` footer
-  in a commit works too, but a malformed one stays in history and breaks every run until the
-  next release; in the config it is one PR to fix.) Hidden types never make a release on their
-  own. A revert counts only as `revert: <subject>`: `git revert`'s own `Revert "..."` is not a
+  `release-please-config.json`: the next release PR, which opens once a listed change is
+  pending, proposes it. Remove it once that release is out, or release-please proposes it again
+  and merging fails (`DuplicateReleaseError`); a check that fails while it is not above the
+  manifest's version is cheap (`jq` + `sort -V`, see bourso-gnucash's `pr-checks.yml`). A
+  `Release-As:` footer in a commit works too, but a malformed one stays in history and breaks
+  every run until the next release. Hidden types never make a release on their own. A revert counts only as `revert: <subject>`: `git revert`'s own `Revert "..."` is not a
   conventional commit, so reword it.
 - **Dependencies**: Dependabot's commit prefix decides what reaches the notes. `prefix-development`
   only exists for some ecosystems (npm, pip, bundler, composer, maven, mix), so set it per block:

@@ -9,6 +9,7 @@
 # Usage (caller):
 #   on:
 #     pull_request:
+#       branches: [main]
 #       types: [opened, edited, synchronize, reopened]
 #   permissions: {}
 #   jobs:
@@ -36,6 +37,11 @@ jobs:
   conventional-title:
     runs-on: ${{ inputs.runs_on }}
     permissions: {}
+    # Only the newest event of a PR matters (a burst of edits or pushes); the
+    # runner pool is shared with image builds.
+    concurrency:
+      group: pr-title-${{ github.event.pull_request.number }}
+      cancel-in-progress: true
     steps:
       - name: The PR title is a conventional commit
         env:
