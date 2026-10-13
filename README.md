@@ -4,6 +4,7 @@
 |---|---|
 | [`docker-build-push-harbor.yml`](#reusable-workflow-docker-build-push--scan-harbor) | Builds an image, pushes it to Harbor with OCI labels, gates on Harbor's vulnerability scan |
 | [`release-please.yml`](#reusable-workflow-release-pr-release-please) | Keeps a release PR open; merging it tags, publishes the GitHub Release and starts the image builds |
+| [`pr-title.yml`](#pr-title-check-pr-titleyml) | Fails a PR whose title is not a conventional commit (on a squash merge it is the release-note line) |
 
 Together they put a version's release notes in front of whoever bumps it: Renovate and
 Dependabot read the image's `org.opencontainers.image.source` label to find the repository,
@@ -213,7 +214,21 @@ pile up in it until you merge it; merging it is the release:
 - Each build workflow listed in `build_workflows` must have `workflow_dispatch:` among its triggers.
 - The caller grants the four permissions below even with no build workflow: GitHub checks a
   nested job's permissions when the run starts.
-- Add three files.
+- **Merge PRs by squash**, with the PR title as the commit subject and an empty body (merge
+  commits stay allowed for the odd case, but a release-please repository doesn't use them):
+
+  ```bash
+  gh api -X PATCH repos/<owner>/<repo> \
+    -F allow_squash_merge=true \
+    -f squash_merge_commit_title=PR_TITLE -f squash_merge_commit_message=BLANK
+  ```
+
+  The PR title, plus GitHub's `(#N)`, is then the PR's one line in the release notes and
+  decides the bump; [`pr-title.yml`](#pr-title-check-pr-titleyml) checks it. Why the body stays
+  empty: release-please parses the whole commit message, and in a body copied from the PR a
+  paragraph starting with `fix:` becomes an entry of its own (marked breaking when a
+  `BREAKING CHANGE:` line follows), and a `Release-As:` line forces the version.
+- Add three files, and the title check.
 
 `.github/workflows/release.yml`:
 
@@ -236,6 +251,22 @@ jobs:
     uses: vchatela-org/shared-workflows/.github/workflows/release-please.yml@v1
     with:
       build_workflows: docker-build-push.yml ghcr-publish.yml
+```
+
+`.github/workflows/pr-title.yml`:
+
+```yaml
+name: PR title
+
+on:
+  pull_request:
+    types: [ opened, edited, synchronize, reopened ]
+
+permissions: {}
+
+jobs:
+  title:
+    uses: vchatela-org/shared-workflows/.github/workflows/pr-title.yml@v1
 ```
 
 `.release-please-manifest.json`, the current version (the latest tag, without its `v`):
@@ -319,12 +350,10 @@ to start, re-run the failed `dispatch-builds` job; it skips a workflow already s
 
 ## Limits
 
-- **Merge commits**: release-please reads every commit a merged branch brings, so each `feat` or
-  `fix` commit on it is one line of the notes, review fixes included. It also walks history by
-  commit date and stops at the last release: a branch commit dated **before** the last release
-  but merged after it is never seen. Before merging a branch that is behind the default branch,
-  update it with a rebase (`gh pr update-branch --rebase <PR>`), which re-dates its commits.
-  Squash merges avoid both (one commit per PR, dated at the merge, its title is the entry).
+- **Why squash, not merge commits**: with a merge commit, release-please reads every commit the
+  branch brings (each `fix: review findings` becomes a line of the notes), and since it walks
+  history by commit date and stops at the last release, a branch commit dated before that
+  release but merged after it is never seen. A squash commit is one entry, dated at the merge.
 - **The release PR runs no CI**: it is pushed with `GITHUB_TOKEN`, whose events start no
   workflow. It only touches the version files and `CHANGELOG.md`; the push checks run on the
   default branch once it is merged. A required status check would block it for good: that
@@ -346,6 +375,20 @@ to start, re-run the failed `dispatch-builds` job; it skips a workflow already s
 | `release_created` | `true` when the run created a release, empty otherwise |
 | `tag_name` | The new tag (e.g. `v1.4.0`) |
 | `version` | The new version (e.g. `1.4.0`) |
+
+# PR title check (`pr-title.yml`)
+
+Fails the PR unless its title reads `type(scope)!: subject` (scope and `!` optional) with a
+type from the `types` input, by default the release-please config's sections: `feat fix perf
+revert deps docs refactor test build ci chore style`. A bash test, no third-party action;
+`edited` in the caller's triggers re-runs it when the title is fixed. Dependabot titles pass
+(`deps: Bump …`, `chore(deps): Bump …`), and so does the release PR's own
+`chore(main): release X.Y.Z`, though it runs no workflow anyway.
+
+| Input | Required | Default | Description |
+|---|---|---|---|
+| `types` | No | the twelve above | Allowed types, space-separated |
+| `runs_on` | No | `ubuntu-latest` | Runner label |
 
 ## Composite Action vs Reusable Workflow
 
