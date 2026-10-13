@@ -326,8 +326,8 @@ jobs:
   No GitHub Release needs to exist beforehand.
 - **Versions while 0.x**: a `feat` bumps the minor, any other listed type the patch, and a
   breaking change (`feat!:` or a `BREAKING CHANGE:` footer) the minor (`bump-minor-pre-major`).
-  A `Release-As: X.Y.Z` footer forces the version. Hidden types never make a release on their
-  own. A revert counts only as `revert: <subject>`: `git revert`'s own `Revert "..."` is not a
+  To force a version, type `Release-As: X.Y.Z` as the squash body of one merge, the only thing
+  that body should ever hold. Hidden types never make a release on their own. A revert counts only as `revert: <subject>`: `git revert`'s own `Revert "..."` is not a
   conventional commit, so reword it.
 - **Dependencies**: Dependabot's commit prefix decides what reaches the notes. `prefix-development`
   only exists for some ecosystems (npm, pip, bundler, composer, maven, mix), so set it per block:
