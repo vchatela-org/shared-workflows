@@ -1,0 +1,66 @@
+# =============================================================================
+# Reusable Workflow: the PR title is a conventional commit
+# =============================================================================
+# In a repository released by release-please and merged by squash, the PR title is
+# the squash commit's subject, so it is the PR's one line in the release notes and
+# decides the version bump. This fails the PR while the title is not
+# `type(scope)!: subject` with a type the release notes know.
+#
+# Usage (caller):
+#   on:
+#     pull_request:
+#       branches: [main]
+#       types: [opened, edited, synchronize, reopened]
+#   permissions: {}
+#   jobs:
+#     title:
+#       uses: vchatela-org/shared-workflows/.github/workflows/pr-title.yml@v1
+# =============================================================================
+
+name: PR title
+
+on:
+  workflow_call:
+    inputs:
+      types:
+        description: "Allowed types, whitespace-separated (the release-please config's changelog-sections)"
+        required: false
+        type: string
+        default: "feat fix perf revert deps docs refactor test build ci chore style"
+      runs_on:
+        description: "Runner label (self-hosted by default: a regex is not worth a billed hosted minute)"
+        required: false
+        type: string
+        default: "arc-runner-set"
+
+jobs:
+  conventional-title:
+    runs-on: ${{ inputs.runs_on }}
+    permissions: {}
+    # Only the newest event of a PR matters (a burst of edits or pushes); the
+    # runner pool is shared with image builds.
+    concurrency:
+      group: pr-title-${{ github.event.pull_request.number }}
+      cancel-in-progress: true
+    steps:
+      - name: The PR title is a conventional commit
+        env:
+          # Through env, never inlined: the title is user input.
+          TITLE: ${{ github.event.pull_request.title }}
+          TYPES: ${{ inputs.types }}
+        run: |
+          # Any whitespace separates types (a block scalar gives newlines); none may be empty.
+          read -r -d '' -a types <<< "$TYPES" || true
+          if [ "${#types[@]}" -eq 0 ]; then
+            echo "::error::The types input is empty"
+            exit 1
+          fi
+          alternation=$(IFS='|'; printf '%s' "${types[*]}")
+          # type, optional (scope), optional !, ":", space(s), then a non-blank subject
+          pattern="^(${alternation})(\([^()]+\))?!?: +[^[:space:]]"
+          if [[ "$TITLE" =~ $pattern ]]; then
+            echo "OK: $TITLE"
+          else
+            echo "::error::The PR title becomes the release-note line on a squash merge, so it must read \`type(scope): subject\` (scope and ! optional) with type one of: $TYPES. Got: $TITLE"
+            exit 1
+          fi

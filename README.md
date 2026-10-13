@@ -1,3 +1,17 @@
+# Shared workflows
+
+| Workflow | What it does |
+|---|---|
+| [`docker-build-push-harbor.yml`](#reusable-workflow-docker-build-push--scan-harbor) | Builds an image, pushes it to Harbor with OCI labels, gates on Harbor's vulnerability scan |
+| [`release-please.yml`](#reusable-workflow-release-pr-release-please) | Keeps a release PR open; merging it tags, publishes the GitHub Release and starts the image builds |
+| [`pr-title.yml`](#pr-title-check-pr-titleyml) | Fails a PR whose title is not a conventional commit (on a squash merge it is the release-note line) |
+
+Together they put a version's release notes in front of whoever bumps it: Renovate and
+Dependabot read the image's `org.opencontainers.image.source` label to find the repository,
+then show the GitHub Release notes of every version the bump skips. For a private
+repository, the bot's token must be able to read it (Renovate here runs with a user token
+that can).
+
 # Reusable Workflow: Docker Build, Push & Scan (Harbor)
 
 ## Setup
@@ -28,6 +42,7 @@ on:
   push:
     branches: [ 'main' ]
     tags: [ 'v*' ]
+  workflow_dispatch:   # lets release-please.yml start it on a release tag
 
 jobs:
   docker-build-push-scan:
@@ -68,6 +83,15 @@ git tag -f -a v1 -m "v1 -> v1.1.0"      # move the floating major tag
 git push origin v1.1.0
 git push origin v1 --force              # required: v1 is a moving ref
 ```
+
+## Image labels
+
+Every image carries the OCI labels of [docker/metadata-action](https://github.com/docker/metadata-action):
+`org.opencontainers.image.source` (the repository URL), `revision` (the commit), `version` (the tag,
+or `dev`), `created`, `title`, `url`, and `description` and `licenses` when the repository has them
+(an empty one is dropped, so it never blanks the Dockerfile's or the base image's). Nothing to
+configure. The source label is what lets Renovate and Dependabot link a Harbor image to its
+repository's release notes.
 
 ## Inputs
 
@@ -181,3 +205,216 @@ This project uses a **reusable workflow** (`workflow_call`) rather than a compos
 - Reusable workflows preserve **job-level parallelism** and **conditional execution**
 
 Use composite actions when you need a reusable *building block* within a job (e.g., "setup Harbor CLI"). Use reusable workflows when you need a reusable *entire pipeline*.
+
+# Reusable Workflow: Release PR (release-please)
+
+[release-please](https://github.com/googleapis/release-please) reads the
+[conventional commits](https://www.conventionalcommits.org/) on the default branch and keeps
+**one release PR** open with the next version and its `CHANGELOG.md` entry. Features and fixes
+pile up in it until you merge it; merging it is the release:
+
+1. release-please tags `vX.Y.Z` and publishes the GitHub Release with the same notes;
+2. this workflow starts the caller's build workflows on that tag (`workflow_dispatch`, the one
+   event the default `GITHUB_TOKEN` may trigger: a tag it creates starts nothing by itself), so
+   no personal token is needed and the builds see the tag as their ref, as on a pushed tag.
+
+## Setup (once per repository)
+
+- **Settings → Actions → General → "Allow GitHub Actions to create and approve pull requests"**
+  must be on, in the organization and in the repository, or release-please cannot open its PR.
+- Each build workflow listed in `build_workflows` must have `workflow_dispatch:` among its triggers.
+- The caller grants the four permissions below even with no build workflow: GitHub checks a
+  nested job's permissions when the run starts.
+- **Merge PRs by squash**, with the PR title as the commit subject and an empty body (merge
+  commits stay allowed for the odd case, but a release-please repository doesn't use them):
+
+  ```bash
+  gh api -X PATCH repos/<owner>/<repo> \
+    -F allow_squash_merge=true -F allow_rebase_merge=false \
+    -f squash_merge_commit_title=PR_TITLE -f squash_merge_commit_message=BLANK \
+    -f merge_commit_title=PR_TITLE -f merge_commit_message=BLANK
+  ```
+
+  Rebase-merging is turned off: it would land every branch commit, as a merge commit does.
+  A merge commit's body is emptied too, or text copied into it could be parsed as more
+  entries. GitHub refuses `MERGE_MESSAGE` with an empty body (its valid pairs are
+  `PR_TITLE`/`PR_BODY`, `PR_TITLE`/`BLANK`, `MERGE_MESSAGE`/`PR_TITLE`), so a merge commit
+  takes the PR title: one more entry on top of the branch's own commits, another reason to
+  squash. These are the merge dialog's prefill: keep it as is.
+
+  The PR title, plus GitHub's `(#N)`, is then the PR's one line in the release notes and
+  decides the bump; [`pr-title.yml`](#pr-title-check-pr-titleyml) checks it. Why the body stays
+  empty: release-please parses the whole commit message, and in a body copied from the PR a
+  paragraph starting with `fix:` becomes an entry of its own (marked breaking when a
+  `BREAKING CHANGE:` line follows), and a `Release-As:` line forces the version.
+- Add three files, and the title check.
+
+`.github/workflows/release.yml`:
+
+```yaml
+name: Release
+
+on:
+  push:
+    branches: [ 'main' ]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  issues: write
+  pull-requests: write
+  actions: write
+
+jobs:
+  release:
+    uses: vchatela-org/shared-workflows/.github/workflows/release-please.yml@v1
+    with:
+      build_workflows: docker-build-push.yml ghcr-publish.yml
+```
+
+`.github/workflows/pr-title.yml`:
+
+```yaml
+name: PR title
+
+on:
+  pull_request:
+    branches: [ main ]
+    types: [ opened, edited, synchronize, reopened ]
+
+permissions: {}
+
+jobs:
+  title:
+    uses: vchatela-org/shared-workflows/.github/workflows/pr-title.yml@v1
+```
+
+`.release-please-manifest.json`, the current version (the latest tag, without its `v`):
+
+```json
+{ ".": "0.9.0" }
+```
+
+`release-please-config.json`:
+
+```json
+{
+  "$schema": "https://raw.githubusercontent.com/googleapis/release-please/main/schemas/config.json",
+  "release-type": "simple",
+  "include-component-in-tag": false,
+  "bump-minor-pre-major": true,
+  "bump-patch-for-minor-pre-major": false,
+  "changelog-sections": [
+    { "type": "feat", "section": "Features" },
+    { "type": "fix", "section": "Bug Fixes" },
+    { "type": "perf", "section": "Performance" },
+    { "type": "revert", "section": "Reverts" },
+    { "type": "deps", "section": "Dependencies" },
+    { "type": "docs", "section": "Documentation", "hidden": true },
+    { "type": "refactor", "section": "Refactoring", "hidden": true },
+    { "type": "test", "section": "Tests", "hidden": true },
+    { "type": "build", "section": "Build", "hidden": true },
+    { "type": "ci", "section": "CI", "hidden": true },
+    { "type": "chore", "section": "Chores", "hidden": true },
+    { "type": "style", "section": "Style", "hidden": true }
+  ],
+  "packages": {
+    ".": {
+      "version-file": "VERSION",
+      "extra-files": [
+        { "type": "generic", "path": "app/__version__.py" }
+      ]
+    }
+  }
+}
+```
+
+- `version-file` is the file holding only the version (`simple` type); `extra-files` lists any
+  other file carrying it. Mark the line in that file with a block, so the line itself stays
+  as it was (a check that parses `__version__ = "X"` keeps working):
+
+  ```python
+  # x-release-please-start-version
+  __version__ = "0.9.0"
+  # x-release-please-end
+  ```
+
+  Drop either key if the repository has no such file. `release-type` can also be `python` or
+  `node` for a package manifest.
+- **The first release PR starts at the manifest's version**: release-please looks for that
+  version's GitHub Release, then for its tag (`v0.9.0`), and only collects the commits after it.
+  No GitHub Release needs to exist beforehand.
+- **Versions while 0.x**: a `feat` bumps the minor, any other listed type the patch, and a
+  breaking change (`feat!:` or a `BREAKING CHANGE:` footer) the minor (`bump-minor-pre-major`).
+  To force a version, set `"release-as": "X.Y.Z"` in the package's entry of
+  `release-please-config.json`: the next release PR, which opens once a listed change is
+  pending, proposes it. Remove it once that release is out, or release-please proposes it again
+  and merging fails (`DuplicateReleaseError`); a check that fails while it is not above the
+  manifest's version is cheap (`jq` + `sort -V`, see bourso-gnucash's `pr-checks.yml`). A
+  `Release-As:` footer in a commit works too, but a malformed one stays in history and breaks
+  every run until the next release. Hidden types never make a release on their own. A revert counts only as `revert: <subject>`: `git revert`'s own `Revert "..."` is not a
+  conventional commit, so reword it.
+- **Dependencies**: Dependabot's commit prefix decides what reaches the notes. `prefix-development`
+  only exists for some ecosystems (npm, pip, bundler, composer, maven, mix), so set it per block:
+
+  ```yaml
+    - package-ecosystem: "pip"          # also npm
+      commit-message:
+        prefix: "deps"                  # runtime: listed, makes a patch release
+        prefix-development: "chore"     # dev: hidden
+    - package-ecosystem: "docker"
+      commit-message:
+        prefix: "deps"                  # every FROM, build stages included
+    - package-ecosystem: "github-actions"
+      commit-message:
+        prefix: "ci"                    # hidden
+  ```
+
+Once this is in, don't bump the version or tag by hand: merge the release PR. If a build fails
+to start, re-run the failed `dispatch-builds` job; it skips a workflow already started on that tag.
+
+## Limits
+
+- **Why squash, not merge commits**: with a merge commit, release-please reads every commit the
+  branch brings (each `fix: review findings` becomes a line of the notes), and since it walks
+  history by commit date and stops at the last release, a branch commit dated before that
+  release but merged after it is never seen. A squash commit is one entry, dated at the merge.
+  If a merge commit is used anyway, first update the branch with a rebase
+  (`gh pr update-branch --rebase <PR>`), which re-dates its commits.
+- **The release PR runs no CI**: it is pushed with `GITHUB_TOKEN`, whose events start no
+  workflow. It only touches the version files and `CHANGELOG.md`; the push checks run on the
+  default branch once it is merged. A required status check would block it for good: that
+  would need a GitHub App token for release-please instead.
+
+## Inputs
+
+| Input | Required | Default | Description |
+|---|---|---|---|
+| `build_workflows` | No | `""` | Caller workflow files to start on the new tag, space-separated |
+| `config_file` | No | `release-please-config.json` | release-please config |
+| `manifest_file` | No | `.release-please-manifest.json` | release-please manifest |
+| `runs_on` | No | `ubuntu-latest` | Runner label (needs the `gh` CLI) |
+
+## Outputs
+
+| Output | Description |
+|---|---|
+| `release_created` | `true` when the run created a release, empty otherwise |
+| `tag_name` | The new tag (e.g. `v1.4.0`) |
+| `version` | The new version (e.g. `1.4.0`) |
+
+# PR title check (`pr-title.yml`)
+
+Fails the PR unless its title reads `type(scope)!: subject` (scope and `!` optional) with a
+type from the `types` input, by default the release-please config's sections: `feat fix perf
+revert deps docs refactor test build ci chore style`. A bash test, no third-party action;
+`edited` in the caller's triggers runs it again when the title is fixed (a re-run of the old
+run would check the old title). Dependabot titles pass (`deps: Bump …`, `chore(deps): Bump …`).
+
+It is advisory: a red title check means "don't merge yet", and nothing enforces it. It cannot
+be a required status check, because the release PR runs no workflow and would never get it.
+
+| Input | Required | Default | Description |
+|---|---|---|---|
+| `types` | No | the twelve above | Allowed types, whitespace-separated |
+| `runs_on` | No | `arc-runner-set` | Runner label |

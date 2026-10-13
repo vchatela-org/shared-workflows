@@ -147,6 +147,31 @@ jobs:
           echo "full_image_ref=${BASE}:${SCAN_TAG}" >> $GITHUB_OUTPUT
           echo "Tags to be built: ${TAGS}"
 
+      # Labels only: the tags stay with "Determine tags" above. The source label is how
+      # Renovate and Dependabot find the repository behind a Harbor image, and with it
+      # the GitHub Release notes they put in a version-bump PR. Also sets revision
+      # (commit), version (the tag, or "dev"), created, title, url and licenses.
+      - name: Image labels
+        id: meta
+        uses: docker/metadata-action@v6
+        with:
+          images: ${{ inputs.harbor_registry }}/${{ inputs.harbor_project }}/${{ inputs.harbor_image }}
+          tags: type=raw,value=${{ steps.determine-tags.outputs.scan_tag }}
+
+      # metadata-action also emits a label with an empty value when the repository has no
+      # description or license; that would blank the same label set by the Dockerfile or
+      # the base image, so keep only labels that carry a value.
+      - name: Drop empty labels
+        id: labels
+        env:
+          LABELS: ${{ steps.meta.outputs.labels }}
+        run: |
+          {
+            echo 'labels<<EOF_LABELS'
+            printf '%s\n' "$LABELS" | grep -v -e '=$' -e '^$' || true
+            echo 'EOF_LABELS'
+          } >> "$GITHUB_OUTPUT"
+
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v4
         with:
@@ -167,6 +192,7 @@ jobs:
           context: ${{ inputs.dockerfile }}
           push: true
           tags: ${{ steps.determine-tags.outputs.tags }}
+          labels: ${{ steps.labels.outputs.labels }}
 
       - name: Verify image exists in Harbor
         run: |
