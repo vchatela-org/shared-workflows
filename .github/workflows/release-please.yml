@@ -84,6 +84,37 @@ jobs:
       tag_name: ${{ steps.release.outputs.tag_name }}
       version: ${{ steps.release.outputs.version }}
     steps:
+      - name: Read the release config
+        uses: actions/checkout@v7
+        with:
+          sparse-checkout: |
+            ${{ inputs.config_file }}
+            ${{ inputs.manifest_file }}
+          sparse-checkout-cone-mode: false
+
+      # A release cut by hand (a pushed tag, a bumped version file) leaves the manifest
+      # behind: release-please would then propose a version that already shipped, and
+      # merging that PR fails or publishes on the old tag. A release-as left after its
+      # release does the same. Refuse to run until the manifest is put right.
+      - name: The manifest is the latest release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CONFIG: ${{ inputs.config_file }}
+          MANIFEST: ${{ inputs.manifest_file }}
+        run: |
+          manifest=$(jq -r '."."' "$MANIFEST")
+          highest=$(gh api "repos/$GITHUB_REPOSITORY/git/matching-refs/tags/v" --paginate \
+            --jq '.[].ref | ltrimstr("refs/tags/v")' | grep -E '^[0-9]+(\.[0-9]+)*$' | sort -V | tail -n1 || true)
+          if [ -n "$highest" ] && [ "$(printf '%s\n%s\n' "$highest" "$manifest" | sort -V | tail -n1)" != "$manifest" ]; then
+            echo "::error::Tag v$highest is above the manifest's $manifest: a release was cut by hand. Set $MANIFEST (and the version files) to $highest in a PR; release-please resumes from there."
+            exit 1
+          fi
+          release_as=$(jq -r '.packages["."]["release-as"] // .["release-as"] // empty' "$CONFIG")
+          if [ -n "$release_as" ] && [ "$(printf '%s\n%s\n' "$release_as" "$manifest" | sort -V | tail -n1)" = "$manifest" ]; then
+            echo "::error::$CONFIG still forces release-as $release_as, and $manifest is already released. Remove it."
+            exit 1
+          fi
+
       - name: Release PR, or tag + GitHub Release once it is merged
         id: release
         uses: googleapis/release-please-action@v5

@@ -370,7 +370,9 @@ jobs:
         prefix: "ci"                    # hidden
   ```
 
-Once this is in, don't bump the version or tag by hand: merge the release PR. If a build fails
+Once this is in, don't bump the version or tag by hand: merge the release PR. The workflow
+refuses to run release-please while a `v*` tag is above the manifest (a release cut by hand) or a
+`release-as` is not above it (left after its release); the error says what to put right. If a build fails
 to start, re-run the failed `dispatch-builds` job; it skips a workflow already started on that tag.
 
 ## Limits
@@ -417,4 +419,4 @@ be a required status check, because the release PR runs no workflow and would ne
 | Input | Required | Default | Description |
 |---|---|---|---|
 | `types` | No | the twelve above | Allowed types, whitespace-separated |
-| `runs_on` | No | `arc-runner-set` | Runner label |
+| `runs_on` | No | `ubuntu-latest` | Runner label; hosted, so a fork's PR never reaches the self-hosted runners. A private repository may pass `arc-runner-set` |

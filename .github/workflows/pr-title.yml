@@ -28,10 +28,13 @@ on:
         type: string
         default: "feat fix perf revert deps docs refactor test build ci chore style"
       runs_on:
-        description: "Runner label (self-hosted by default: a regex is not worth a billed hosted minute)"
+        description: >-
+          Runner label. Hosted by default: a pull_request run of a public repository can
+          come from a fork, and must not land on the self-hosted runners. A private
+          repository may pass arc-runner-set to save hosted minutes.
         required: false
         type: string
-        default: "arc-runner-set"
+        default: "ubuntu-latest"
 
 jobs:
   conventional-title:
