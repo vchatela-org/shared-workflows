@@ -28,17 +28,20 @@ on:
         type: string
         default: "feat fix perf revert deps docs refactor test build ci chore style"
       runs_on:
-        description: "Runner label (self-hosted by default: a regex is not worth a billed hosted minute)"
+        description: >-
+          Runner label. Hosted by default: a pull_request run of a public repository can
+          come from a fork, and must not land on the self-hosted runners. A private
+          repository may pass arc-runner-set to save hosted minutes.
         required: false
         type: string
-        default: "arc-runner-set"
+        default: "ubuntu-latest"
 
 jobs:
   conventional-title:
-    runs-on: ${{ inputs.runs_on }}
+    # A fork's PR always runs hosted, whatever runs_on says: never on self-hosted runners.
+    runs-on: ${{ github.event.pull_request.head.repo.full_name != github.repository && 'ubuntu-latest' || inputs.runs_on }}
     permissions: {}
-    # Only the newest event of a PR matters (a burst of edits or pushes); the
-    # runner pool is shared with image builds.
+    # Only the newest event of a PR matters (a burst of edits or pushes).
     concurrency:
       group: pr-title-${{ github.event.pull_request.number }}
       cancel-in-progress: true
