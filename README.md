@@ -232,12 +232,15 @@ pile up in it until you merge it; merging it is the release:
   gh api -X PATCH repos/<owner>/<repo> \
     -F allow_squash_merge=true -F allow_rebase_merge=false \
     -f squash_merge_commit_title=PR_TITLE -f squash_merge_commit_message=BLANK \
-    -f merge_commit_title=MERGE_MESSAGE -f merge_commit_message=BLANK
+    -f merge_commit_title=PR_TITLE -f merge_commit_message=BLANK
   ```
 
   Rebase-merging is turned off: it would land every branch commit, as a merge commit does.
-  A merge commit's body is emptied too, or the PR title in it would be one more entry. These
-  are the merge dialog's prefill: keep it as is.
+  A merge commit's body is emptied too, or text copied into it could be parsed as more
+  entries. GitHub refuses `MERGE_MESSAGE` with an empty body (its valid pairs are
+  `PR_TITLE`/`PR_BODY`, `PR_TITLE`/`BLANK`, `MERGE_MESSAGE`/`PR_TITLE`), so a merge commit
+  takes the PR title: one more entry on top of the branch's own commits, another reason to
+  squash. These are the merge dialog's prefill: keep it as is.
 
   The PR title, plus GitHub's `(#N)`, is then the PR's one line in the release notes and
   decides the bump; [`pr-title.yml`](#pr-title-check-pr-titleyml) checks it. Why the body stays
