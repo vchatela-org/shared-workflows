@@ -38,10 +38,10 @@ on:
 
 jobs:
   conventional-title:
-    runs-on: ${{ inputs.runs_on }}
+    # A fork's PR always runs hosted, whatever runs_on says: never on self-hosted runners.
+    runs-on: ${{ github.event.pull_request.head.repo.full_name != github.repository && 'ubuntu-latest' || inputs.runs_on }}
     permissions: {}
-    # Only the newest event of a PR matters (a burst of edits or pushes); the
-    # runner pool is shared with image builds.
+    # Only the newest event of a PR matters (a burst of edits or pushes).
     concurrency:
       group: pr-title-${{ github.event.pull_request.number }}
       cancel-in-progress: true

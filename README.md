@@ -348,11 +348,10 @@ jobs:
   breaking change (`feat!:` or a `BREAKING CHANGE:` footer) the minor (`bump-minor-pre-major`).
   To force a version, set `"release-as": "X.Y.Z"` in the package's entry of
   `release-please-config.json`: the next release PR, which opens once a listed change is
-  pending, proposes it. Remove it once that release is out, or release-please proposes it again
-  and merging fails (`DuplicateReleaseError`); a check that fails while it is not above the
-  manifest's version is cheap (`jq` + `sort -V`, see bourso-gnucash's `pr-checks.yml`). A
-  `Release-As:` footer in a commit works too, but a malformed one stays in history and breaks
-  every run until the next release. Hidden types never make a release on their own. A revert counts only as `revert: <subject>`: `git revert`'s own `Revert "..."` is not a
+  pending, proposes it. Remove it once `vX.Y.Z` is out: from then on the workflow refuses to run
+  until it is gone (release-please would propose it again). A `Release-As:` footer in a commit
+  works too, but a malformed one stays in history and breaks every run until the next release.
+  Hidden types never make a release on their own. A revert counts only as `revert: <subject>`: `git revert`'s own `Revert "..."` is not a
   conventional commit, so reword it.
 - **Dependencies**: Dependabot's commit prefix decides what reaches the notes. `prefix-development`
   only exists for some ecosystems (npm, pip, bundler, composer, maven, mix), so set it per block:
@@ -371,8 +370,10 @@ jobs:
   ```
 
 Once this is in, don't bump the version or tag by hand: merge the release PR. The workflow
-refuses to run release-please while a `v*` tag is above the manifest (a release cut by hand) or a
-`release-as` is not above it (left after its release); the error says what to put right. If a build fails
+refuses to run release-please while a `v*` tag is above the manifest (a release cut by hand, or a
+stray tag) or a `release-as` is already tagged (left after its release); the error says what to put
+right. It does not catch a hand-pushed tag equal to the version of the open release PR: merging that
+PR then publishes on the hand-made tag. Don't push tags. If a build fails
 to start, re-run the failed `dispatch-builds` job; it skips a workflow already started on that tag.
 
 ## Limits
