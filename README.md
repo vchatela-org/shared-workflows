@@ -195,6 +195,17 @@ jobs:
       - run: echo "Deploying ${{ needs.build.outputs.full_image_ref }}"
 ```
 
+## Composite Action vs Reusable Workflow
+
+This project uses a **reusable workflow** (`workflow_call`) rather than a composite action because:
+
+- The pipeline has **multiple jobs** (build → scan) with outputs flowing between them
+- Composite actions are limited to **steps within a single job**
+- Reusable workflows natively support **secrets** (composite actions require passing them as inputs)
+- Reusable workflows preserve **job-level parallelism** and **conditional execution**
+
+Use composite actions when you need a reusable *building block* within a job (e.g., "setup Harbor CLI"). Use reusable workflows when you need a reusable *entire pipeline*.
+
 # Reusable Workflow: Release PR (release-please)
 
 [release-please](https://github.com/googleapis/release-please) reads the
@@ -219,9 +230,11 @@ pile up in it until you merge it; merging it is the release:
 
   ```bash
   gh api -X PATCH repos/<owner>/<repo> \
-    -F allow_squash_merge=true \
+    -F allow_squash_merge=true -F allow_rebase_merge=false \
     -f squash_merge_commit_title=PR_TITLE -f squash_merge_commit_message=BLANK
   ```
+
+  Rebase-merging is turned off: it would land every branch commit, as a merge commit does.
 
   The PR title, plus GitHub's `(#N)`, is then the PR's one line in the release notes and
   decides the bump; [`pr-title.yml`](#pr-title-check-pr-titleyml) checks it. Why the body stays
@@ -326,8 +339,11 @@ jobs:
   No GitHub Release needs to exist beforehand.
 - **Versions while 0.x**: a `feat` bumps the minor, any other listed type the patch, and a
   breaking change (`feat!:` or a `BREAKING CHANGE:` footer) the minor (`bump-minor-pre-major`).
-  To force a version, type `Release-As: X.Y.Z` as the squash body of one merge, the only thing
-  that body should ever hold. Hidden types never make a release on their own. A revert counts only as `revert: <subject>`: `git revert`'s own `Revert "..."` is not a
+  To force a version, set `"release-as": "X.Y.Z"` in the package's entry of
+  `release-please-config.json`, and remove it once that release is out. (A `Release-As:` footer
+  in a commit works too, but a malformed one stays in history and breaks every run until the
+  next release; in the config it is one PR to fix.) Hidden types never make a release on their
+  own. A revert counts only as `revert: <subject>`: `git revert`'s own `Revert "..."` is not a
   conventional commit, so reword it.
 - **Dependencies**: Dependabot's commit prefix decides what reaches the notes. `prefix-development`
   only exists for some ecosystems (npm, pip, bundler, composer, maven, mix), so set it per block:
@@ -354,6 +370,8 @@ to start, re-run the failed `dispatch-builds` job; it skips a workflow already s
   branch brings (each `fix: review findings` becomes a line of the notes), and since it walks
   history by commit date and stops at the last release, a branch commit dated before that
   release but merged after it is never seen. A squash commit is one entry, dated at the merge.
+  If a merge commit is used anyway, first update the branch with a rebase
+  (`gh pr update-branch --rebase <PR>`), which re-dates its commits.
 - **The release PR runs no CI**: it is pushed with `GITHUB_TOKEN`, whose events start no
   workflow. It only touches the version files and `CHANGELOG.md`; the push checks run on the
   default branch once it is merged. A required status check would block it for good: that
@@ -381,22 +399,13 @@ to start, re-run the failed `dispatch-builds` job; it skips a workflow already s
 Fails the PR unless its title reads `type(scope)!: subject` (scope and `!` optional) with a
 type from the `types` input, by default the release-please config's sections: `feat fix perf
 revert deps docs refactor test build ci chore style`. A bash test, no third-party action;
-`edited` in the caller's triggers re-runs it when the title is fixed. Dependabot titles pass
-(`deps: Bump …`, `chore(deps): Bump …`), and so does the release PR's own
-`chore(main): release X.Y.Z`, though it runs no workflow anyway.
+`edited` in the caller's triggers runs it again when the title is fixed (a re-run of the old
+run would check the old title). Dependabot titles pass (`deps: Bump …`, `chore(deps): Bump …`).
+
+It is advisory: a red title check means "don't merge yet", and nothing enforces it. It cannot
+be a required status check, because the release PR runs no workflow and would never get it.
 
 | Input | Required | Default | Description |
 |---|---|---|---|
-| `types` | No | the twelve above | Allowed types, space-separated |
-| `runs_on` | No | `ubuntu-latest` | Runner label |
-
-## Composite Action vs Reusable Workflow
-
-This project uses a **reusable workflow** (`workflow_call`) rather than a composite action because:
-
-- The pipeline has **multiple jobs** (build → scan) with outputs flowing between them
-- Composite actions are limited to **steps within a single job**
-- Reusable workflows natively support **secrets** (composite actions require passing them as inputs)
-- Reusable workflows preserve **job-level parallelism** and **conditional execution**
-
-Use composite actions when you need a reusable *building block* within a job (e.g., "setup Harbor CLI"). Use reusable workflows when you need a reusable *entire pipeline*.
+| `types` | No | the twelve above | Allowed types, whitespace-separated |
+| `runs_on` | No | `arc-runner-set` | Runner label |

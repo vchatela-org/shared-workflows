@@ -22,15 +22,15 @@ on:
   workflow_call:
     inputs:
       types:
-        description: "Allowed types, space-separated (the release-please config's changelog-sections)"
+        description: "Allowed types, whitespace-separated (the release-please config's changelog-sections)"
         required: false
         type: string
         default: "feat fix perf revert deps docs refactor test build ci chore style"
       runs_on:
-        description: "Runner label"
+        description: "Runner label (self-hosted by default: a regex is not worth a billed hosted minute)"
         required: false
         type: string
-        default: "ubuntu-latest"
+        default: "arc-runner-set"
 
 jobs:
   conventional-title:
@@ -43,9 +43,15 @@ jobs:
           TITLE: ${{ github.event.pull_request.title }}
           TYPES: ${{ inputs.types }}
         run: |
-          alternation=$(printf '%s' "$TYPES" | tr -s ' ' '|')
-          # type, optional (scope), optional !, ": ", then a non-blank subject
-          pattern="^(${alternation})(\([^()]+\))?!?: [^[:space:]]"
+          # Any whitespace separates types (a block scalar gives newlines); none may be empty.
+          read -r -d '' -a types <<< "$TYPES" || true
+          if [ "${#types[@]}" -eq 0 ]; then
+            echo "::error::The types input is empty"
+            exit 1
+          fi
+          alternation=$(IFS='|'; printf '%s' "${types[*]}")
+          # type, optional (scope), optional !, ":", space(s), then a non-blank subject
+          pattern="^(${alternation})(\([^()]+\))?!?: +[^[:space:]]"
           if [[ "$TITLE" =~ $pattern ]]; then
             echo "OK: $TITLE"
           else
