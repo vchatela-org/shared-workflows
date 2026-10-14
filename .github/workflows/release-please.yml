@@ -51,7 +51,7 @@ on:
         type: string
         default: ".release-please-manifest.json"
       runs_on:
-        description: "Runner label (needs gh and jq: the version guard and the build dispatch use them)"
+        description: "Runner label (needs jq; gh is installed when missing, as on the ARC runner image)"
         required: false
         type: string
         default: "ubuntu-latest"
@@ -84,6 +84,11 @@ jobs:
       tag_name: ${{ steps.release.outputs.tag_name }}
       version: ${{ steps.release.outputs.version }}
     steps:
+      # The ARC runner image has jq but no gh, which the guard below and the build
+      # dispatch need. A hosted runner has it already.
+      - name: GitHub CLI is available
+        run: command -v gh >/dev/null || { sudo apt-get update -qq && sudo apt-get install -y -qq gh; }
+
       # A release cut by hand (a pushed v* tag) leaves the manifest behind: release-please
       # would then propose a version that already shipped, and merging that PR fails or
       # publishes on the old tag. A release-as left after its release does the same.
@@ -138,6 +143,9 @@ jobs:
     permissions:
       actions: write
     steps:
+      - name: GitHub CLI is available
+        run: command -v gh >/dev/null || { sudo apt-get update -qq && sudo apt-get install -y -qq gh; }
+
       - name: Start the build workflows on the release tag
         env:
           GH_TOKEN: ${{ github.token }}
