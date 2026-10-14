@@ -218,8 +218,11 @@ identity at all.
 
 There are no registry secrets: the image is pushed to `ghcr.io` with the run's own
 `GITHUB_TOKEN`. After the push, [Trivy](https://github.com/aquasecurity/trivy) scans the image
-**by digest** and the Dockerfile, and the job fails on a HIGH or CRITICAL finding. A public repo
-that reaches GHCR this way replaces both Harbor and the self-hosted runner.
+**by digest** and the job fails on a HIGH or CRITICAL vulnerability or secret. The Dockerfile is
+scanned for misconfiguration too, but **advisably** — it is reported in the log and never fails the
+job, because a Dockerfile that deliberately runs as root is a repository's decision, not this
+workflow's. A public repo that reaches GHCR this way replaces both Harbor and the self-hosted
+runner.
 
 ## Setup
 
