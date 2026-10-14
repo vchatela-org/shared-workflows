@@ -1,0 +1,195 @@
+# =============================================================================
+# Reusable Workflow: Build, Push to GHCR, and Trivy scan
+# =============================================================================
+# For a repository whose image ships to a cluster from GHCR. It runs on a
+# GitHub-hosted runner by default: standard runners are free for public
+# repositories and carry no cluster identity, so a public repository's code
+# never runs a job on the organisation's self-hosted runner set - whose token
+# can read cluster secrets. A private repository may pass runs_on: arc-runner-set.
+#
+# There are no registry secrets: the image is pushed to ghcr.io with the run's
+# own GITHUB_TOKEN. The vulnerability and misconfiguration scans run after the
+# push and fail the job on a HIGH or CRITICAL finding, so a bad image is red
+# rather than silent.
+#
+# Usage from any repo:
+#   jobs:
+#     publish:
+#       permissions:
+#         contents: read
+#         packages: write      # a reusable workflow cannot exceed the caller's grant
+#       uses: vchatela-org/shared-workflows/.github/workflows/docker-build-push-ghcr.yml@v1
+#       with:
+#         image_name: my-app
+# =============================================================================
+
+name: Build & Push (GHCR)
+
+on:
+  workflow_call:
+    inputs:
+      image_name:
+        description: "Image name under ghcr.io/<owner>/ (e.g. my-app)"
+        required: true
+        type: string
+      dockerfile:
+        description: "Path to the Dockerfile"
+        required: false
+        type: string
+        default: "Dockerfile"
+      context:
+        description: "Docker build context"
+        required: false
+        type: string
+        default: "."
+      build_args:
+        description: "Newline-separated list of build args"
+        required: false
+        type: string
+        default: ""
+      platforms:
+        description: "Target platforms"
+        required: false
+        type: string
+        default: "linux/amd64"
+      runs_on:
+        description: "Runner label"
+        required: false
+        type: string
+        default: "ubuntu-latest"
+      scan_enabled:
+        description: "Run the Trivy vulnerability and misconfiguration scans"
+        required: false
+        type: boolean
+        default: true
+
+    outputs:
+      image_digest:
+        description: "Digest of the pushed image (sha256:...)"
+        value: ${{ jobs.build.outputs.digest }}
+      image_ref:
+        description: "Image reference without a tag (ghcr.io/<owner>/<image>)"
+        value: ${{ jobs.build.outputs.image_ref }}
+      version:
+        description: "Primary version tag chosen by docker/metadata-action"
+        value: ${{ jobs.build.outputs.version }}
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  build:
+    runs-on: ${{ inputs.runs_on }}
+    outputs:
+      digest: ${{ steps.build.outputs.digest }}
+      image_ref: ${{ steps.image.outputs.ref }}
+      version: ${{ steps.meta.outputs.version }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      # GITHUB_REPOSITORY_OWNER is the caller's owner, so every image lands under
+      # ghcr.io/<owner>/<image_name>.
+      - name: Compute image reference
+        id: image
+        run: echo "ref=ghcr.io/${GITHUB_REPOSITORY_OWNER}/${{ inputs.image_name }}" >> "$GITHUB_OUTPUT"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+
+      - name: Log in to GHCR
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Image metadata
+        id: meta
+        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
+        with:
+          images: ${{ steps.image.outputs.ref }}
+          # `latest` follows the default branch; release tags get semver tags;
+          # every build also gets a sha-<short> tag.
+          tags: |
+            type=raw,value=latest,enable={{is_default_branch}}
+            type=sha
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=semver,pattern={{major}}
+
+      # metadata-action also emits a label with an empty value when the repository
+      # has no description or license; that would blank the same label set by the
+      # Dockerfile or the base image, so keep only labels that carry a value.
+      - name: Drop empty labels
+        id: labels
+        env:
+          LABELS: ${{ steps.meta.outputs.labels }}
+        run: |
+          {
+            echo 'labels<<EOF_LABELS'
+            printf '%s\n' "$LABELS" | grep -v -e '=$' -e '^$' || true
+            echo 'EOF_LABELS'
+          } >> "$GITHUB_OUTPUT"
+
+      # SBOM and provenance can only be attached to an image that is pushed, which
+      # is why the build does not have a load-only mode here.
+      - name: Build and push
+        id: build
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: ${{ inputs.context }}
+          file: ${{ inputs.dockerfile }}
+          push: true
+          platforms: ${{ inputs.platforms }}
+          build-args: ${{ inputs.build_args }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.labels.outputs.labels }}
+          sbom: true
+          provenance: mode=max
+
+      - name: Record the digest
+        run: |
+          {
+            echo "### ${{ inputs.image_name }}"
+            echo ""
+            echo "Tags: \`${{ steps.meta.outputs.tags }}\`"
+            echo "Digest: \`${{ steps.build.outputs.digest }}\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  # Scans the pushed image by digest, not by tag: the digest is what the
+  # deployment should pin, and it cannot be moved under the scan.
+  scan:
+    if: ${{ inputs.scan_enabled }}
+    needs: build
+    runs-on: ${{ inputs.runs_on }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Log in to GHCR
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Trivy — image vulnerabilities and secrets
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: ${{ needs.build.outputs.image_ref }}@${{ needs.build.outputs.digest }}
+          format: table
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          scanners: vuln,secret
+          exit-code: '1'
+
+      - name: Trivy — Dockerfile misconfiguration
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          scan-type: config
+          scan-ref: ${{ inputs.context }}
+          format: table
+          severity: HIGH,CRITICAL
+          exit-code: '1'

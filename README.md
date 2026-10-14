@@ -3,6 +3,7 @@
 | Workflow | What it does |
 |---|---|
 | [`docker-build-push-harbor.yml`](#reusable-workflow-docker-build-push--scan-harbor) | Builds an image, pushes it to Harbor with OCI labels, gates on Harbor's vulnerability scan |
+| [`docker-build-push-ghcr.yml`](#reusable-workflow-docker-build--push-ghcr) | Builds an image, pushes it to GHCR on a GitHub-hosted runner, gates on Trivy |
 | [`release-please.yml`](#reusable-workflow-release-pr-release-please) | Keeps a release PR open; merging it tags, publishes the GitHub Release and starts the image builds |
 | [`pr-title.yml`](#pr-title-check-pr-titleyml) | Fails a PR whose title is not a conventional commit (on a squash merge it is the release-note line) |
 
@@ -205,6 +206,122 @@ This project uses a **reusable workflow** (`workflow_call`) rather than a compos
 - Reusable workflows preserve **job-level parallelism** and **conditional execution**
 
 Use composite actions when you need a reusable *building block* within a job (e.g., "setup Harbor CLI"). Use reusable workflows when you need a reusable *entire pipeline*.
+
+# Reusable Workflow: Docker Build & Push (GHCR)
+
+The GHCR counterpart to the Harbor workflow, for a repository whose image the cluster pulls
+straight from `ghcr.io`. It exists so a **public** repository's build never runs on the
+organisation's self-hosted runners: those runners' token can read cluster secrets, and
+"Allow public repositories" is off on the runner group. GitHub-hosted standard runners are
+**free for public repositories**, so a public repo builds here at no cost — and with no cluster
+identity at all.
+
+There are no registry secrets: the image is pushed to `ghcr.io` with the run's own
+`GITHUB_TOKEN`. After the push, [Trivy](https://github.com/aquasecurity/trivy) scans the image
+**by digest** and the Dockerfile, and the job fails on a HIGH or CRITICAL finding. A public repo
+that reaches GHCR this way replaces both Harbor and the self-hosted runner.
+
+## Setup
+
+This reusable workflow lives in the same shared repository as the others:
+
+```
+vchatela-org/shared-workflows
+└── .github/
+    └── workflows/
+        └── docker-build-push-ghcr.yml   ← this file
+```
+
+## Usage (in any consuming repo)
+
+Create `.github/workflows/docker-build-push.yml`:
+
+```yaml
+name: Build and Push Docker Image to GHCR
+
+on:
+  push:
+    branches: [ 'main' ]
+    tags: [ 'v*' ]
+  workflow_dispatch:   # lets release-please.yml start it on a release tag
+
+# Least privilege by default; the job below grants what it needs.
+permissions:
+  contents: read
+
+jobs:
+  docker-build-push:
+    if: github.repository == 'vchatela-org/my-app'   # a fork has neither the token nor the package
+    permissions:
+      contents: read
+      packages: write
+    uses: vchatela-org/shared-workflows/.github/workflows/docker-build-push-ghcr.yml@v1
+    with:
+      image_name: my-app
+```
+
+The `packages: write` grant is not optional: a reusable workflow can only ever hold a **subset**
+of the caller's permissions, so without it the push is denied with a permissions error.
+
+## Versioning
+
+Versioned exactly as the Harbor workflow — pin to a tag rather than `@main` (see
+[Versioning](#versioning) above): `@v1` follows the latest `v1.x.y`, `@v1.0.0` is immutable,
+`@main` is for testing only.
+
+## Image labels
+
+Identical to the Harbor workflow (see [Image labels](#image-labels) above): every image carries
+docker/metadata-action's OCI labels, and the empty ones are dropped so they never blank the
+Dockerfile's or the base image's. The `org.opencontainers.image.source` label is what lets
+Renovate link a `ghcr.io` image to its repository's release notes.
+
+## Inputs
+
+| Input | Required | Default | Description |
+|---|---|---|---|
+| `image_name` | Yes | — | Image name under `ghcr.io/<owner>/` (e.g. `my-app`) |
+| `dockerfile` | No | `Dockerfile` | Path to the Dockerfile |
+| `context` | No | `.` | Docker build context |
+| `build_args` | No | `""` | Newline-separated build args |
+| `platforms` | No | `linux/amd64` | Target platforms |
+| `runs_on` | No | `ubuntu-latest` | Runner label; hosted by default, so a public repo never reaches the self-hosted set. A private repository may pass `arc-runner-set`. |
+| `scan_enabled` | No | `true` | Run the Trivy scans |
+
+## Outputs
+
+| Output | Description |
+|---|---|
+| `image_digest` | Digest of the pushed image (`sha256:…`) — pin the deployment to this |
+| `image_ref` | Image reference without a tag (`ghcr.io/<owner>/<image>`) |
+| `version` | Primary version tag chosen by docker/metadata-action |
+
+The deployment should pin `ghcr.io/<owner>/<image>:<tag>@sha256:<digest>`: the tag reads, the
+digest cannot be moved under it. Read the value from the job summary, or from a downstream job
+as `${{ needs.build.outputs.image_digest }}`.
+
+## Examples
+
+### A monorepo image at a sub-path
+
+```yaml
+jobs:
+  docker-build-push:
+    permissions: { contents: read, packages: write }
+    uses: vchatela-org/shared-workflows/.github/workflows/docker-build-push-ghcr.yml@v1
+    with:
+      image_name: my-app
+      context: .
+      dockerfile: apps/api/Dockerfile
+```
+
+### Multi-architecture
+
+```yaml
+    with:
+      image_name: my-app
+      platforms: linux/amd64,linux/arm64
+```
 
 # Reusable Workflow: Release PR (release-please)
 
