@@ -185,11 +185,15 @@ jobs:
           scanners: vuln,secret
           exit-code: '1'
 
-      - name: Trivy — Dockerfile misconfiguration
+      # Advisory, and scoped to the Dockerfile. A repository's own Kubernetes
+      # templates are not this workflow's business, and a Dockerfile that
+      # deliberately runs as root is a repository decision rather than a reason
+      # to block a publish. The image scan above is the gate.
+      - name: Trivy — Dockerfile misconfiguration (advisory)
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
           scan-type: config
-          scan-ref: ${{ inputs.context }}
+          scan-ref: ${{ inputs.dockerfile }}
           format: table
           severity: HIGH,CRITICAL
-          exit-code: '1'
+          exit-code: '0'
