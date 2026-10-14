@@ -516,7 +516,7 @@ to start, re-run the failed `dispatch-builds` job; it skips a workflow already s
 | `build_workflows` | No | `""` | Caller workflow files to start on the new tag, space-separated |
 | `config_file` | No | `release-please-config.json` | release-please config |
 | `manifest_file` | No | `.release-please-manifest.json` | release-please manifest |
-| `runs_on` | No | `ubuntu-latest` | Runner label (needs the `gh` CLI) |
+| `runs_on` | No | `ubuntu-latest` | Runner label; `gh` is installed when missing, as on the ARC runner image. A private repository may pass `arc-runner-set` |
 
 ## Outputs
 
