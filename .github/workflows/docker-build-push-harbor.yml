@@ -45,6 +45,11 @@ on:
         required: false
         type: string
         default: "."
+      file:
+        description: "Dockerfile path from the repository root, when it is not <context>/Dockerfile (e.g. two images built from one context)"
+        required: false
+        type: string
+        default: ""
       buildx_driver:
         description: "Docker Buildx driver (docker, docker-container, kubernetes)"
         required: false
@@ -190,6 +195,8 @@ jobs:
         id: build
         with:
           context: ${{ inputs.dockerfile }}
+          # Empty: build-push-action's own default, <context>/Dockerfile.
+          file: ${{ inputs.file }}
           push: true
           tags: ${{ steps.determine-tags.outputs.tags }}
           labels: ${{ steps.labels.outputs.labels }}
