@@ -103,6 +103,7 @@ repository's release notes.
 | `harbor_image` | Yes | — | Image name |
 | `runs_on` | No | `arc-runner-set` | Runner label |
 | `dockerfile` | No | `.` | Docker build context path |
+| `file` | No | *(empty: `<context>/Dockerfile`)* | Dockerfile path from the repository root, for a second image built from the same context (BuildKit also reads `<file>.dockerignore` next to it) |
 | `buildx_driver` | No | `kubernetes` | Buildx driver |
 | `buildx_driver_opts` | No | *(kubernetes defaults)* | Buildx driver options |
 | `scan_enabled` | No | `true` | Enable vulnerability scan |
